@@ -147,6 +147,36 @@ cargo clippy --locked --all-targets -- -D warnings
 cargo build --release --locked
 ```
 
+The [Windows workflow](.github/workflows/windows.yml) runs formatting, strict
+all-target Clippy and debug/release builds on `windows-2025`, with read-only
+repository permissions and a commit-pinned checkout action. The hosted runner's
+administrator token is used only for builds and ephemeral test-account setup.
+The [hosted wrapper](.github/scripts/hosted-native-tests.ps1) refuses execution
+outside a GitHub-hosted Windows VM, creates a fresh standard-user identity,
+grants it workspace access and read/execute access to the installed toolchain,
+and launches native tests with that identity's loaded profile. The native helper
+independently checks the actual process elevation before running tests.
+The wrapper removes the test account on exit; GitHub disposes of the VM,
+including on cancellation. No production credentials or self-hosted runner
+are required. Checkout does not persist Git credentials.
+
+The [native-check script](.github/scripts/native-tests.ps1) can also be run locally
+from an authorized unelevated development session:
+
+```powershell
+& .\.github\scripts\native-tests.ps1 -ReportDirectory 'C:\lab\Shield-checks-new'
+```
+
+It refuses an elevated process or an existing report directory, runs both
+debug/release test suites and verifies both eight-observation LPAC reports
+against independently computed executable hashes. It does not install services,
+change security policy, provision provider credentials or bypass a failed check.
+These are software regressions and scoped observations, not deployment,
+complete-egress or provider/account qualification. Native reports stay on the
+runner; no executable, report or credential is automatically uploaded.
+The helper uses the machine's normal execution policy; do not bypass or weaken
+workstation policy to execute it.
+
 Recorded source validation on 2026-10-29: all 82 tests passed in both debug and
 optimized release (74 library,
 4 command-parsing and 4 actual native/CLI workflows), formatting passed, and all-target

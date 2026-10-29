@@ -1,0 +1,51 @@
+name: Windows software checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain
+        run: |
+          $text = Get-Content -LiteralPath rust-toolchain.toml -Raw
+          $match = [regex]::Match($text, '(?m)^channel\s*=\s*"([^"]+)"\s*$')
+          if (-not $match.Success) { throw 'Pinned toolchain channel is missing' }
+          rustup toolchain install $match.Groups[1].Value --profile minimal --component clippy --component rustfmt --component rust-src
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned toolchain installation failed' }
+      - name: Formatting
+        run: |
+          cargo fmt --all -- --check
+          if ($LASTEXITCODE -ne 0) { throw 'Formatting failed' }
+      - name: Strict all-target Clippy
+        run: |
+          cargo clippy --locked --all-targets -- -D warnings
+          if ($LASTEXITCODE -ne 0) { throw 'Clippy failed' }
+      - name: Build debug and release
+        run: |
+          cargo build --locked
+          if ($LASTEXITCODE -ne 0) { throw 'Debug build failed' }
+          cargo build --release --locked
+          if ($LASTEXITCODE -ne 0) { throw 'Release build failed' }
+      - name: Native debug and release regression checks
+        run: |
+          & .\.github\scripts\hosted-native-tests.ps1
+      - name: State the scope of native observations
+        if: success()
+        run: |
+          'Debug/release regression tests and scoped LPAC canaries passed. This is not App Control/WFP deployment qualification, complete egress isolation or provider/account acceptance.' |
+            Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
