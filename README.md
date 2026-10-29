@@ -1,5 +1,12 @@
 # Shield
 
+Shield is a Windows-first security controller for application admission and
+tightly scoped AI-assisted workflows. It is designed to combine native Windows
+execution controls, isolated AI workers, broker-held credentials, and explicit
+task permissions with separate approval before publishing changes. The goal is
+to limit unauthorized actions even when an approved AI worker is manipulated,
+rather than relying on the model to follow instructions.
+
 Experimental Windows/Rust implementation of part of the integrated pilot defined
 in [start.txt](start.txt). **This is not a completed endpoint-security product,
 an accepted integrated pilot, or a solution to every intrusion. Do not deploy it
