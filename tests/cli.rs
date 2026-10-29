@@ -1,13 +1,28 @@
 use std::io::Cursor;
 use std::path::Path;
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use shield::protocol::{HostMessage, WorkerMessage};
 use shield::{platform, selftest, util};
 use uuid::Uuid;
+
+struct OwnedCliChild(Child);
+
+impl Drop for OwnedCliChild {
+    fn drop(&mut self) {
+        if !matches!(self.0.try_wait(), Ok(Some(_))) {
+            if let Err(error) = self.0.kill() {
+                eprintln!("owned CLI test child termination failed: {error}");
+            }
+            if let Err(error) = self.0.wait() {
+                eprintln!("owned CLI test child reaping failed: {error}");
+            }
+        }
+    }
+}
 
 fn run(state: &Path, arguments: &[&str]) -> Output {
     command_output(
@@ -19,15 +34,44 @@ fn run(state: &Path, arguments: &[&str]) -> Output {
 }
 
 fn command_output(command: &mut Command) -> Output {
-    platform::spawn_command(
-        command
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped()),
-    )
-    .unwrap()
-    .wait_with_output()
-    .unwrap()
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut child = OwnedCliChild(
+        platform::spawn_command(
+            command
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped()),
+        )
+        .unwrap(),
+    );
+    wait_output(&mut child.0, deadline).unwrap()
+}
+
+fn wait_output(child: &mut Child, deadline: Instant) -> shield::error::Result<Output> {
+    let stdout = child.stdout.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
+    let output =
+        std::thread::spawn(move || platform::read_pipe_until(stdout, 1024 * 1024, deadline));
+    let errors = std::thread::spawn(move || platform::read_pipe_until(stderr, 16 * 1024, deadline));
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break Some(status);
+        }
+        if Instant::now() >= deadline {
+            child.kill()?;
+            child.wait()?;
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    let stdout = output.join().unwrap();
+    let stderr = errors.join().unwrap();
+    let status = status.ok_or(shield::error::Error::Deadline)?;
+    Ok(Output {
+        status,
+        stdout: stdout?,
+        stderr: stderr?,
+    })
 }
 
 fn success(state: &Path, arguments: &[&str]) -> Output {
@@ -43,6 +87,32 @@ fn success(state: &Path, arguments: &[&str]) -> Output {
 
 fn json(state: &Path, arguments: &[&str]) -> Value {
     serde_json::from_slice(&success(state, arguments).stdout).unwrap()
+}
+
+#[test]
+fn cli_deadline_terminates_and_reaps_only_the_owned_suspended_child() {
+    use std::os::windows::process::CommandExt;
+    use windows_sys::Win32::System::Threading::{CREATE_NO_WINDOW, CREATE_SUSPENDED};
+    let spawn = || {
+        OwnedCliChild(
+            platform::spawn_command(
+                Command::new(std::env::current_exe().unwrap())
+                    .creation_flags(CREATE_SUSPENDED | CREATE_NO_WINDOW)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped()),
+            )
+            .unwrap(),
+        )
+    };
+    let mut child = spawn();
+    let mut unrelated = spawn();
+    assert!(matches!(
+        wait_output(&mut child.0, Instant::now() + Duration::from_millis(100)),
+        Err(shield::error::Error::Deadline),
+    ));
+    assert!(child.0.try_wait().unwrap().is_some());
+    assert!(unrelated.0.try_wait().unwrap().is_none());
 }
 
 #[test]
@@ -268,9 +338,10 @@ fn actual_lpac_worker_completes_the_offline_stdio_inference_exchange() {
         let output = process.output.take().unwrap();
         let (sender, receiver) = mpsc::channel();
         let reader = scope.spawn(move || {
-            let _ = sender.send(util::read_bounded(
+            let _ = sender.send(platform::read_pipe_until(
                 output,
                 shield::worker::FRAME_LIMIT as u64,
+                Instant::now() + Duration::from_secs(10),
             ));
         });
         for message in [

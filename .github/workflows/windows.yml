@@ -31,9 +31,9 @@ jobs:
         run: |
           cargo fmt --all -- --check
           if ($LASTEXITCODE -ne 0) { throw 'Formatting failed' }
-      - name: Strict all-target Clippy
+      - name: Strict all-target/all-feature Clippy
         run: |
-          cargo clippy --locked --all-targets -- -D warnings
+          cargo clippy --locked --all-targets --all-features -- -D warnings
           if ($LASTEXITCODE -ne 0) { throw 'Clippy failed' }
       - name: Build debug and release
         run: |

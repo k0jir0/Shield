@@ -10,6 +10,11 @@ use windows_sys::Win32::Storage::FileSystem::*;
 use crate::error::{Error, Result, invalid};
 use crate::util;
 
+const UNSUPPORTED_ATTRIBUTES: u32 = FILE_ATTRIBUTE_REPARSE_POINT
+    | FILE_ATTRIBUTE_OFFLINE
+    | FILE_ATTRIBUTE_RECALL_ON_OPEN
+    | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Fingerprint {
@@ -31,6 +36,15 @@ pub fn validate_path(path: &Path) -> Result<()> {
             "UNC, device, verbatim, and remote paths are not supported",
         ));
     }
+    let spelling = path
+        .to_str()
+        .ok_or_else(|| invalid("path is not Unicode"))?;
+    if spelling
+        .split(['\\', '/'])
+        .any(|value| matches!(value, "." | ".."))
+    {
+        return Err(invalid("dot and parent path components are unsupported"));
+    }
     for component in components {
         match component {
             Component::RootDir => {}
@@ -39,13 +53,21 @@ pub fn validate_path(path: &Path) -> Result<()> {
                     .to_str()
                     .ok_or_else(|| invalid("path is not Unicode"))?;
                 let stem = value.split('.').next().unwrap_or("").to_ascii_uppercase();
+                let device_number = stem
+                    .strip_prefix("COM")
+                    .or_else(|| stem.strip_prefix("LPT"));
+                let reserved_number = device_number.is_some_and(|number| {
+                    (number.len() == 1 && number.as_bytes()[0].is_ascii_digit())
+                        || matches!(number, "\u{b9}" | "\u{b2}" | "\u{b3}")
+                });
                 if value.ends_with(['.', ' '])
                     || value.contains([':', '~', '*', '?', '"', '<', '>', '|'])
                     || value.chars().any(char::is_control)
-                    || matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-                    || (stem.len() == 4
-                        && (stem.starts_with("COM") || stem.starts_with("LPT"))
-                        && stem.as_bytes()[3].is_ascii_digit())
+                    || matches!(
+                        stem.as_str(),
+                        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+                    )
+                    || reserved_number
                 {
                     return Err(invalid(
                         "ambiguous, reserved, alternate-stream, or alias paths are unsupported",
@@ -62,9 +84,9 @@ pub fn check_no_reparse(path: &Path) -> Result<()> {
     validate_path(path)?;
     for ancestor in path.ancestors() {
         let metadata = std::fs::symlink_metadata(ancestor)?;
-        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        if metadata.file_attributes() & UNSUPPORTED_ATTRIBUTES != 0 {
             return Err(invalid(
-                "reparse points and synchronized/redirected placeholders are unsupported",
+                "reparse, offline, recall-on-access and synchronized/redirected paths are unsupported",
             ));
         }
     }
@@ -116,11 +138,11 @@ fn information(file: &File) -> Result<BY_HANDLE_FILE_INFORMATION> {
             source: std::io::Error::last_os_error(),
         });
     }
-    if information.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY) != 0
+    if information.dwFileAttributes & (UNSUPPORTED_ATTRIBUTES | FILE_ATTRIBUTE_DIRECTORY) != 0
         || information.nNumberOfLinks != 1
     {
         return Err(invalid(
-            "only non-reparse, single-link regular files are supported",
+            "only online, non-reparse, single-link regular files are supported",
         ));
     }
     Ok(information)
@@ -244,6 +266,7 @@ pub fn create_new(path: &Path, bytes: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::windows::ffi::OsStrExt;
 
     #[test]
     fn rejected_paths_do_not_reach_the_filesystem() {
@@ -259,6 +282,64 @@ mod tests {
         ] {
             assert!(validate_path(Path::new(path)).is_err(), "{path}");
         }
+    }
+
+    #[test]
+    fn reserved_console_and_superscript_device_names_are_rejected() {
+        for name in ["CONIN$", "CONOUT$"] {
+            assert!(validate_path(Path::new(&format!(r"C:\notes\{name}"))).is_err());
+        }
+        for prefix in ["COM", "LPT"] {
+            for digit in ["\u{b9}", "\u{b2}", "\u{b3}"] {
+                for extension in ["", ".txt"] {
+                    let name = format!(r"C:\notes\{prefix}{digit}{extension}");
+                    assert!(validate_path(Path::new(&name)).is_err(), "{name}");
+                }
+            }
+        }
+        for name in ["COM10.txt", "LPTnotes.txt", "CONSOLE.txt", "ordinary.txt"] {
+            assert!(validate_path(Path::new(&format!(r"C:\notes\{name}"))).is_ok());
+        }
+    }
+
+    #[test]
+    fn explicit_dot_segments_are_not_silently_normalized() {
+        for name in [
+            r"C:\notes\.\note.txt",
+            r"C:\.\notes\note.txt",
+            r"C:\notes\..\note.txt",
+        ] {
+            assert!(validate_path(Path::new(name)).is_err(), "{name}");
+        }
+    }
+
+    #[test]
+    fn offline_files_are_refused_before_capture_pinning_or_publication() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("offline-note.txt");
+        std::fs::write(&path, b"local positive control").unwrap();
+        let (_, expected) = snapshot(&path, 100).unwrap();
+        let attributes = std::fs::metadata(&path).unwrap().file_attributes();
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        assert_ne!(
+            unsafe { SetFileAttributesW(wide.as_ptr(), attributes | FILE_ATTRIBUTE_OFFLINE) },
+            0
+        );
+        assert_ne!(
+            std::fs::symlink_metadata(&path).unwrap().file_attributes() & FILE_ATTRIBUTE_OFFLINE,
+            0
+        );
+        let capture_refused = snapshot(&path, 100).is_err();
+        let pin_refused = pin(&path, 100).is_err();
+        let publication_refused = Publication::lock(&path, &expected, 100).is_err();
+        assert_ne!(unsafe { SetFileAttributesW(wide.as_ptr(), attributes) }, 0);
+        assert!(capture_refused, "offline input bytes were captured");
+        assert!(pin_refused, "offline input was pinned");
+        assert!(
+            publication_refused,
+            "offline target was opened for publication"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"local positive control");
     }
 
     #[test]

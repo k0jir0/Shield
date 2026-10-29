@@ -19,7 +19,7 @@ use windows_sys::Win32::Security::Isolation::*;
 use windows_sys::Win32::Security::*;
 use windows_sys::Win32::System::JobObjects::*;
 use windows_sys::Win32::System::LibraryLoader::*;
-use windows_sys::Win32::System::Pipes::CreatePipe;
+use windows_sys::Win32::System::Pipes::{CreatePipe, PeekNamedPipe};
 use windows_sys::Win32::System::Registry::*;
 use windows_sys::Win32::System::Threading::*;
 use zeroize::Zeroizing;
@@ -41,6 +41,95 @@ fn process_creation_lock() -> io::Result<MutexGuard<'static, ()>> {
 pub fn spawn_command(command: &mut Command) -> io::Result<Child> {
     let _creation = process_creation_lock()?;
     command.spawn()
+}
+
+/// Read a uniquely owned pipe without allowing an idle writer to outlive the deadline.
+pub fn pipe_reader_until(
+    pipe: impl io::Read + AsRawHandle,
+    deadline: std::time::Instant,
+) -> impl io::Read {
+    DeadlinePipe { pipe, deadline }
+}
+
+struct DeadlinePipe<T> {
+    pipe: T,
+    deadline: std::time::Instant,
+}
+
+impl<T: io::Read + AsRawHandle> io::Read for DeadlinePipe<T> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if buffer.is_empty() {
+            return Ok(0);
+        }
+        loop {
+            if std::time::Instant::now() >= self.deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "pipe deadline expired",
+                ));
+            }
+            let mut available = 0;
+            if unsafe {
+                PeekNamedPipe(
+                    self.pipe.as_raw_handle(),
+                    null_mut(),
+                    0,
+                    null_mut(),
+                    &mut available,
+                    null_mut(),
+                )
+            } == 0
+            {
+                let source = io::Error::last_os_error();
+                if source.raw_os_error() == Some(ERROR_BROKEN_PIPE as i32) {
+                    if std::time::Instant::now() >= self.deadline {
+                        return Err(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "pipe deadline expired",
+                        ));
+                    }
+                    return Ok(0);
+                }
+                return Err(source);
+            }
+            if available == 0 {
+                std::thread::sleep(
+                    std::time::Duration::from_millis(5).min(
+                        self.deadline
+                            .saturating_duration_since(std::time::Instant::now()),
+                    ),
+                );
+                continue;
+            }
+            // A sole reader consumes no more than the bytes the pipe already holds.
+            let amount = (available as usize).min(buffer.len());
+            let count = self.pipe.read(&mut buffer[..amount])?;
+            if count == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "pipe made no progress after reporting readable bytes",
+                ));
+            }
+            return Ok(count);
+        }
+    }
+}
+
+/// Drain an exclusively read pipe; EOF, byte bounds and deadline are independent.
+pub fn read_pipe_until(
+    pipe: impl io::Read + AsRawHandle,
+    limit: u64,
+    deadline: std::time::Instant,
+) -> Result<Vec<u8>> {
+    crate::util::read_bounded(pipe_reader_until(pipe, deadline), limit).map_err(|error| match error
+    {
+        Error::Io(source) if source.kind() == io::ErrorKind::TimedOut => Error::Deadline,
+        Error::Io(source) => Error::Windows {
+            operation: "bounded pipe read",
+            source,
+        },
+        error => error,
+    })
 }
 
 pub(crate) struct SystemLibrary(HMODULE);
@@ -1201,6 +1290,122 @@ pub fn probe_loopback(port: u16) -> Result<LoopbackConnection> {
             ));
         }
         Ok(LoopbackConnection::Connected {})
+    }
+}
+
+#[cfg(test)]
+mod pipe_reader_tests {
+    use super::*;
+    use std::io::Write;
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    fn test_pipe() -> (File, File) {
+        let mut read = null_mut();
+        let mut write = null_mut();
+        assert_ne!(
+            unsafe { CreatePipe(&mut read, &mut write, null(), 4096) },
+            0
+        );
+        unsafe {
+            (
+                File::from(OwnedHandle::from_raw_handle(read)),
+                File::from(OwnedHandle::from_raw_handle(write)),
+            )
+        }
+    }
+
+    #[test]
+    fn interactive_frames_arrive_without_eof_but_stalled_writers_still_expire() {
+        let (read, mut write) = test_pipe();
+        write.write_all(b"first\n").unwrap();
+        let (release, released) = mpsc::channel::<()>();
+        let holder = thread::spawn(move || {
+            let _held_writer = write;
+            let _ = released.recv_timeout(Duration::from_secs(2));
+        });
+        let mut reader = io::BufReader::new(pipe_reader_until(
+            read,
+            Instant::now() + Duration::from_millis(100),
+        ));
+        assert_eq!(
+            crate::util::read_frame(&mut reader, 32).unwrap().unwrap(),
+            b"first"
+        );
+        let stalled = crate::util::read_frame(&mut reader, 32);
+        let returned_before_release = release.send(()).is_ok();
+        holder.join().unwrap();
+        assert!(
+            matches!(stalled, Err(Error::Io(error)) if error.kind() == io::ErrorKind::TimedOut)
+        );
+        assert!(returned_before_release);
+    }
+
+    #[test]
+    fn open_writer_cannot_extend_the_pipe_reader_deadline() {
+        let (read, write) = test_pipe();
+        let (release, released) = mpsc::channel::<()>();
+        let holder = thread::spawn(move || {
+            let _held_writer = write;
+            let _ = released.recv_timeout(Duration::from_secs(2));
+        });
+        let started = Instant::now();
+        let result = read_pipe_until(read, 64, started + Duration::from_millis(50));
+        let elapsed = started.elapsed();
+        let reader_returned_before_release = release.send(()).is_ok();
+        holder.join().unwrap();
+        assert!(
+            matches!(result, Err(Error::Deadline)),
+            "an open writer must not turn a deadline into successful EOF"
+        );
+        assert!(reader_returned_before_release);
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "pipe deadline exceeded its test grace period"
+        );
+    }
+
+    #[test]
+    fn pipe_reader_accepts_exact_bound_only_after_eof() {
+        let (read, mut write) = test_pipe();
+        write.write_all(b"data").unwrap();
+        drop(write);
+        assert_eq!(
+            read_pipe_until(read, 4, Instant::now() + Duration::from_secs(1)).unwrap(),
+            b"data",
+        );
+    }
+
+    #[test]
+    fn pipe_reader_rejects_excess_bytes_without_waiting_for_eof() {
+        let (read, mut write) = test_pipe();
+        write.write_all(b"extra").unwrap();
+        assert!(matches!(
+            read_pipe_until(read, 4, Instant::now() + Duration::from_secs(1)),
+            Err(Error::Invalid(_)),
+        ));
+    }
+
+    #[test]
+    fn expired_pipe_deadline_never_accepts_available_output() {
+        let (read, mut write) = test_pipe();
+        write.write_all(b"data").unwrap();
+        drop(write);
+        assert!(matches!(
+            read_pipe_until(read, 4, Instant::now()),
+            Err(Error::Deadline),
+        ));
+    }
+
+    #[test]
+    fn pipe_reader_refuses_regular_files() {
+        let mut file = tempfile::tempfile().unwrap();
+        file.write_all(b"not pipe data").unwrap();
+        assert!(matches!(
+            read_pipe_until(file, 64, Instant::now() + Duration::from_secs(1)),
+            Err(Error::Windows { .. }),
+        ));
     }
 }
 

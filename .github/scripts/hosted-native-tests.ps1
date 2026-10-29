@@ -60,9 +60,20 @@ try {
     $stdout = Join-Path $work 'stdout.log'
     $stderr = Join-Path $work 'stderr.log'
     $arguments = '-NoLogo -NoProfile -File "{0}" -ReportDirectory "{1}"' -f $script, $report
-    $process = Start-Process -FilePath (Join-Path $PSHOME 'pwsh.exe') -Credential $credential -LoadUserProfile -WorkingDirectory $root -ArgumentList $arguments -RedirectStandardOutput $stdout -RedirectStandardError $stderr -Wait -PassThru
-    Get-Content -LiteralPath $stdout
-    Get-Content -LiteralPath $stderr
+    $process = Start-Process -FilePath (Join-Path $PSHOME 'pwsh.exe') -Credential $credential -LoadUserProfile -WorkingDirectory $root -ArgumentList $arguments -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
+    Write-Output "Waiting for owned native regression child $($process.Id); deadline is 25 minutes."
+    try {
+        if (-not $process.WaitForExit(25 * 60 * 1000)) {
+            $process.Kill($true)
+            if (-not $process.WaitForExit(10000)) {
+                throw 'Owned native regression process termination is unverified'
+            }
+            throw 'Native regressions exceeded 25 minutes; owned process-tree termination was requested'
+        }
+    } finally {
+        Get-Content -LiteralPath $stdout
+        Get-Content -LiteralPath $stderr
+    }
     if ($process.ExitCode -ne 0) { throw "Non-elevated native checks failed: exit $($process.ExitCode)" }
 } finally {
     foreach ($key in $variables) { [Environment]::SetEnvironmentVariable($key, $saved[$key], 'Process') }

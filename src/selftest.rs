@@ -4,7 +4,7 @@ use std::net::{Ipv4Addr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use uuid::Uuid;
@@ -12,7 +12,7 @@ use uuid::Uuid;
 use crate::error::{Error, Result, invalid};
 use crate::platform;
 use crate::protocol::{HostMessage, LoopbackConnection, WorkerMessage};
-use crate::util::{file_digest, literal, read_bounded, read_frame};
+use crate::util::{file_digest, literal, read_frame};
 use crate::worker::FRAME_LIMIT;
 
 #[derive(Debug, Serialize)]
@@ -180,8 +180,9 @@ pub fn run_with_worker(
         .take()
         .ok_or_else(|| invalid("restricted worker stdout is missing"))?;
     let (sender, receiver) = mpsc::channel();
+    let output_deadline = Instant::now() + Duration::from_secs(8);
     let reader = thread::spawn(move || {
-        let value = read_bounded(output, FRAME_LIMIT as u64);
+        let value = platform::read_pipe_until(output, FRAME_LIMIT as u64, output_deadline);
         let _ = sender.send(value);
     });
     send(

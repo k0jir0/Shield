@@ -698,8 +698,7 @@ fn execute() -> Result<()> {
                     )
                 }
                 Action::Cancel { task } => {
-                    store.revoke(task)?;
-                    let empty_job_observed = platform::terminate_task(task)?;
+                    let empty_job_observed = runtime::cancel(&mut store, task)?;
                     display(
                         &json!({"task": task, "local_epoch": "revoked", "named_job_found_and_observed_empty": empty_job_observed, "controller_reconciliation": "required_until_closed", "remote_effects": "not_recalled"}),
                     )

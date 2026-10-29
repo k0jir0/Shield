@@ -24,9 +24,14 @@ Do not use production credentials or data.**
   worker, verified zero-capability less-privileged AppContainer (LPAC) identities,
   job resource limits, deadlines, cancellation, and coordinated child-process
   creation to avoid leaking temporary worker pipe handles to other helpers.
+  Cancellation still attempts owned-job termination on journal-write failure
+  and reports unverified revocation rather than claiming success. Worker frame
+  reads and self-test output have absolute pipe deadlines, even if a writer
+  remains open.
 - **Explicit authority:** frozen enrollment profiles, task grants and epochs,
   transactional allowances, protected local state, and no automatic replay of
-  uncertain effects.
+  uncertain effects. Journal page/retention settings are reapplied on every
+  connection rather than lost after initialization.
 - **Controlled publication:** captured inputs, artifact digests, separate one-use
   approvals, changed-original rejection, readback, and reviewed restoration.
 - **Brokered providers:** fixed OpenAI Responses and read-only Microsoft Graph
@@ -51,7 +56,7 @@ cargo build --release --locked
 cargo test --locked --all-targets
 cargo test --release --locked --all-targets
 cargo fmt --all -- --check
-cargo clippy --locked --all-targets -- -D warnings
+cargo clippy --locked --all-targets --all-features -- -D warnings
 ```
 
 The [Windows workflow](.github/workflows/windows.yml) performs formatting,
@@ -59,17 +64,20 @@ strict Clippy, debug/release builds, and native regression checks. Native tests
 run under a fresh standard-user identity on a disposable GitHub-hosted VM,
 with an independent elevation check.
 
-Recorded validation: **113 software/checker tests passed in both debug and
-release** before the final test-only edge-case additions. All 24 updated checker
-tests passed in debug before the documentation refresh. Subsequent debug and
-release checker binaries compiled, but Windows Application Control blocked
-execution (error 4551). Strict all-feature Clippy, formatting
-and discovery of all 100 opt-in contracts pass. Earlier debug/release
-binary-bound runs also passed eight scoped native observations each. These are
-software checks, not deployment or protection certification.
-Do not weaken Windows security or execution policy to make a check pass.
-Validation is local, with the final checker reruns blocked as described
-above; these changes have not yet run in a new GitHub Actions run.
+Latest local validation: **131 software/checker tests passed in debug**, with
+no ignored tests. In release, **12 tests passed; 119 were blocked before
+execution** by existing Windows Application Control (error 4551). That is not
+a release pass. Strict all-feature Clippy and formatting pass. Recent TDD
+increments cover journal budgets, file boundaries, cancellation ownership,
+bounded helper I/O and retained pipe writers; reproduced failures and earlier
+binary-bound results remain in the [technical paper](paper.txt).
+
+The last published hosted run was cancelled at its 45-minute job limit, not
+passed. The updated wrapper adds a shorter owned-process wait and prints logs
+on failure; it is syntax-checked only and needs a fresh hosted run. These local
+software checks are not deployment or protection
+certification. Do not weaken Windows security or execution policy to make a
+check pass.
 
 ## Current limits
 
@@ -84,6 +92,8 @@ above; these changes have not yet run in a new GitHub Actions run.
   passed. All twelve protection milestones remain unverified.
 - Publication writes **in place, not crash-atomically**. Local cancellation
   cannot recall disclosed data, remote requests, tokens, or completed effects.
+- The journal's **64 MiB limit covers main database pages**. Its 1 MiB retained
+  WAL setting is not a hard peak-WAL or total-storage cap.
 - There is no production signed release, authenticated updater, product
   installer, qualified deployment/recovery process, or public support commitment.
 
@@ -126,6 +136,10 @@ are intentionally **red without it**, not ignored or counted as protection
 passes. They replay evidence; they do not themselves install policies, call
 providers, authenticate observers, or certify Shield. See the [technical paper](paper.txt)
 for the red/green workflow, bundle schema, scope selections, and limitations.
+The four R0 contracts were executed and remain red: no reviewed scope,
+authority matrix, budgets/stop rules, or admission/disclosure bundle has been
+supplied. Code changes and green software tests cannot substitute for those
+operator decisions or the authorized Windows/provider lab.
 
 ## Documentation
 

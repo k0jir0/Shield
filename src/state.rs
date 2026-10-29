@@ -15,6 +15,10 @@ use crate::files::{self, Fingerprint};
 use crate::profile::Profile;
 use crate::{platform, util};
 
+const JOURNAL_PAGE_BYTES: u64 = 4096;
+const JOURNAL_MAX_PAGES: u64 = 16384;
+const JOURNAL_RETAINED_WAL_BYTES: i64 = 1048576;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskKind {
@@ -71,6 +75,21 @@ pub struct Task {
     pub output_digest: Option<String>,
     pub error: Option<String>,
     pub grant: Option<Grant>,
+}
+
+impl Task {
+    pub(crate) fn require_cancellable(&self) -> Result<()> {
+        if matches!(
+            self.phase.as_str(),
+            "publishing" | "published" | "recovery_required"
+        ) {
+            return Err(Error::Denied(
+                "completed or uncertain publication requires explicit recovery, not cancellation"
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -180,6 +199,37 @@ fn authorize(task: &Task, epoch: Uuid, profile: &str) -> Result<()> {
     Ok(())
 }
 
+fn configure_journal(connection: &Connection) -> Result<()> {
+    connection.busy_timeout(Duration::from_secs(2))?;
+    let page_bytes: u64 = connection.query_row("PRAGMA page_size", [], |row| row.get(0))?;
+    if page_bytes != JOURNAL_PAGE_BYTES {
+        return Err(Error::Unsupported(
+            "state journal requires 4096-byte pages; automatic migration is forbidden".into(),
+        ));
+    }
+    let pages: u64 = connection.query_row("PRAGMA page_count", [], |row| row.get(0))?;
+    if pages > JOURNAL_MAX_PAGES {
+        return Err(Error::Quota(
+            "state journal exceeds its 64 MiB database budget; retain evidence for reviewed recovery"
+                .into(),
+        ));
+    }
+    // SQLite does not persist these limits when the connection closes.
+    let maximum: u64 = connection.query_row(
+        &format!("PRAGMA max_page_count={JOURNAL_MAX_PAGES}"),
+        [],
+        |row| row.get(0),
+    )?;
+    if maximum != JOURNAL_MAX_PAGES {
+        return Err(Error::Denied(
+            "state journal did not accept its exact page-count limit".into(),
+        ));
+    }
+    connection.pragma_update(None, "journal_size_limit", JOURNAL_RETAINED_WAL_BYTES)?;
+    connection.execute_batch("PRAGMA foreign_keys=ON; PRAGMA synchronous=FULL;")?;
+    Ok(())
+}
+
 impl Store {
     pub fn initialize(root: &Path, profile: Profile) -> Result<Self> {
         if platform::is_elevated()? {
@@ -207,12 +257,9 @@ impl Store {
             root.join("worker").join("shield-worker.exe"),
         )?;
         let connection = Connection::open(root.join("journal.db"))?;
+        configure_journal(&connection)?;
         connection.execute_batch(
             "PRAGMA journal_mode=WAL;
-             PRAGMA synchronous=FULL;
-             PRAGMA foreign_keys=ON;
-             PRAGMA max_page_count=16384;
-             PRAGMA journal_size_limit=1048576;
              CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
              CREATE TABLE tasks(
                 id TEXT PRIMARY KEY, spec TEXT NOT NULL,
@@ -263,8 +310,7 @@ impl Store {
             root.join("journal.db"),
             OpenFlags::SQLITE_OPEN_READ_WRITE,
         )?;
-        connection.busy_timeout(Duration::from_secs(2))?;
-        connection.execute_batch("PRAGMA foreign_keys=ON; PRAGMA synchronous=FULL;")?;
+        configure_journal(&connection)?;
         let schema: String =
             connection.query_row("SELECT value FROM meta WHERE key='schema'", [], |row| {
                 row.get(0)
@@ -884,15 +930,7 @@ impl Store {
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let task = task_from_connection(&transaction, id)?;
-        if matches!(
-            task.phase.as_str(),
-            "publishing" | "published" | "recovery_required"
-        ) {
-            return Err(Error::Denied(
-                "completed or uncertain publication requires explicit recovery, not cancellation"
-                    .into(),
-            ));
-        }
+        task.require_cancellable()?;
         let phase = if matches!(task.phase.as_str(), "running" | "revoking") {
             "revoking"
         } else {
@@ -1609,6 +1647,98 @@ mod tests {
             .unwrap();
         assert!(store.verify_audit().is_err());
         assert!(store.evidence().is_err());
+    }
+
+    #[test]
+    fn journal_connection_limits_survive_initialization_and_reopening() {
+        let (_directory, store, _) = setup(TaskKind::ManualLab, 16);
+        let root = store.root.clone();
+        let verify = |store: &Store| {
+            let page_bytes: u64 = store
+                .connection
+                .query_row("PRAGMA page_size", [], |row| row.get(0))
+                .unwrap();
+            let max_pages: u64 = store
+                .connection
+                .query_row("PRAGMA max_page_count", [], |row| row.get(0))
+                .unwrap();
+            let retained_wal_bytes: i64 = store
+                .connection
+                .query_row("PRAGMA journal_size_limit", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(page_bytes, 4096);
+            assert_eq!(max_pages, 16384);
+            assert_eq!(retained_wal_bytes, 1048576);
+        };
+        verify(&store);
+        verify(&Store::open(&root).unwrap());
+        drop(store);
+        verify(&Store::open(&root).unwrap());
+    }
+
+    #[test]
+    fn journal_growth_beyond_64_mib_is_refused_without_advancing_authority() {
+        let (_directory, store, id) = setup(TaskKind::ManualLab, 16);
+        let events = store.verify_audit().unwrap();
+        store
+            .connection
+            .execute_batch("CREATE TABLE capacity_probe(payload BLOB)")
+            .unwrap();
+        let result = store.connection.execute(
+            "INSERT INTO capacity_probe VALUES(zeroblob(?1))",
+            [64 * 1024 * 1024],
+        );
+        assert!(matches!(
+            result,
+            Err(rusqlite::Error::SqliteFailure(code, _))
+                if code.code == rusqlite::ErrorCode::DiskFull
+        ));
+        let rows: u64 = store
+            .connection
+            .query_row("SELECT count(*) FROM capacity_probe", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(rows, 0);
+        assert_eq!(store.task(id).unwrap().phase, "prepared");
+        assert_eq!(store.task(id).unwrap().model_calls, 0);
+        assert_eq!(store.verify_audit().unwrap(), events);
+    }
+
+    #[test]
+    fn journal_with_changed_page_size_is_refused_without_migration() {
+        let (_directory, store, _) = setup(TaskKind::ManualLab, 16);
+        let root = store.root.clone();
+        drop(store);
+        let connection = Connection::open(root.join("journal.db")).unwrap();
+        connection
+            .execute_batch("PRAGMA journal_mode=DELETE; PRAGMA page_size=8192; VACUUM;")
+            .unwrap();
+        drop(connection);
+        assert!(matches!(Store::open(&root), Err(Error::Unsupported(_))));
+        let connection = Connection::open(root.join("journal.db")).unwrap();
+        let page_bytes: u64 = connection
+            .query_row("PRAGMA page_size", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(page_bytes, 8192);
+    }
+
+    #[test]
+    fn journal_already_larger_than_the_budget_is_refused_without_truncation() {
+        let (_directory, store, _) = setup(TaskKind::ManualLab, 16);
+        let root = store.root.clone();
+        drop(store);
+        let connection = Connection::open(root.join("journal.db")).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE capacity_probe(payload BLOB);
+             INSERT INTO capacity_probe VALUES(zeroblob(67108864));",
+            )
+            .unwrap();
+        drop(connection);
+        let path = root.join("journal.db");
+        let bytes = std::fs::metadata(&path).unwrap().len();
+        assert!(bytes > 64 * 1024 * 1024);
+        assert!(matches!(Store::open(&root), Err(Error::Quota(_))));
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), bytes);
     }
 
     #[test]

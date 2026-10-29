@@ -365,7 +365,7 @@ pub fn run(store: &mut Store, id: Uuid, approved_disclosure_digest: &str) -> Res
         .ok_or_else(|| invalid("worker output is closed"))?;
     let (sender, receiver) = mpsc::sync_channel(2);
     let reader = thread::spawn(move || -> Result<()> {
-        let mut reader = BufReader::new(output);
+        let mut reader = BufReader::new(platform::pipe_reader_until(output, deadline));
         for _ in 0..8 {
             let Some(frame) = util::read_frame(&mut reader, worker::FRAME_LIMIT)? else {
                 return Ok(());
@@ -457,6 +457,28 @@ pub fn run(store: &mut Store, id: Uuid, approved_disclosure_digest: &str) -> Res
     }
 }
 
+pub fn cancel(store: &mut Store, id: Uuid) -> Result<bool> {
+    store.task(id)?.require_cancellable()?;
+    match store.revoke(id) {
+        Ok(()) => platform::terminate_task(id).map_err(|error| {
+            Error::Unknown(format!(
+                "task {id} epoch was revoked, but local job termination is unverified: {error}; remote effects are not recalled"
+            ))
+        }),
+        Err(error @ Error::Journal(_)) => {
+            let local = match platform::terminate_task(id) {
+                Ok(true) => "owned named job was observed empty".into(),
+                Ok(false) => "no owned named job was found; local termination is not proven".into(),
+                Err(termination) => format!("local job termination is unverified: {termination}"),
+            };
+            Err(Error::Unknown(format!(
+                "task {id} epoch revocation could not be durably verified: {error}; {local}; broker authority requires reconciliation and remote effects are not recalled"
+            )))
+        }
+        Err(error) => Err(error),
+    }
+}
+
 pub fn recover(store: &mut Store, id: Uuid) -> Result<()> {
     let _control = store.control_lock()?;
     if store.task(id)?.spec.kind == TaskKind::Live {
@@ -476,8 +498,22 @@ mod tests {
     use windows_sys::Win32::System::JobObjects::*;
     use windows_sys::Win32::System::Threading::{CREATE_NO_WINDOW, CREATE_SUSPENDED};
 
-    fn suspended_owned_process() -> (Child, OwnedHandle) {
-        let raw_job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+    fn suspended_owned_process(task: Option<Uuid>) -> (Child, OwnedHandle) {
+        let name: Option<Vec<u16>> = task.map(|id| {
+            format!(
+                "Local\\Shield.{}.{id}",
+                platform::current_user_sid().unwrap()
+            )
+            .encode_utf16()
+            .chain(Some(0))
+            .collect()
+        });
+        let raw_job = unsafe {
+            CreateJobObjectW(
+                std::ptr::null(),
+                name.as_ref().map_or(std::ptr::null(), |name| name.as_ptr()),
+            )
+        };
         assert!(!raw_job.is_null(), "{}", std::io::Error::last_os_error());
         let job = unsafe { OwnedHandle::from_raw_handle(raw_job) };
         let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
@@ -529,7 +565,7 @@ mod tests {
 
     #[test]
     fn deadline_monitor_terminates_an_owned_process_without_native_queries() {
-        let (mut child, job) = suspended_owned_process();
+        let (mut child, job) = suspended_owned_process(None);
         assert!(child.try_wait().unwrap().is_none());
         let (stop, stopped) = mpsc::channel();
         let deadline = Instant::now() + Duration::from_millis(150);
@@ -541,7 +577,7 @@ mod tests {
 
     #[test]
     fn deadline_monitor_fails_closed_when_its_owner_disappears() {
-        let (mut child, job) = suspended_owned_process();
+        let (mut child, job) = suspended_owned_process(None);
         let (stop, stopped) = mpsc::channel();
         let observed_by = Instant::now() + Duration::from_secs(2);
         let monitor = thread::spawn(move || {
@@ -550,6 +586,108 @@ mod tests {
         drop(stop);
         observe_termination(&mut child, observed_by);
         assert!(matches!(monitor.join().unwrap(), Err(Error::Denied(_))));
+    }
+
+    fn cancellation_fixture(kind: TaskKind) -> (tempfile::TempDir, Store, Uuid) {
+        let directory = tempfile::tempdir().unwrap();
+        let note = directory.path().join("note.txt");
+        std::fs::write(&note, b"owned inert note").unwrap();
+        let mut profile = crate::profile::Profile::draft("cancellation test".into()).unwrap();
+        if kind == TaskKind::Live {
+            profile.graph = Some(crate::profile::Graph {
+                tenant_id: Uuid::new_v4(),
+                client_id: Uuid::new_v4(),
+                drive_id: "drive".into(),
+                item_id: "reference".into(),
+                forbidden_item_id: None,
+                download_hosts: vec!["tenant.sharepoint.com".into()],
+            });
+        }
+        let mut store = Store::initialize(&directory.path().join("state"), profile).unwrap();
+        let id = store
+            .prepare(
+                kind,
+                &note,
+                "edit note".into(),
+                b"reference",
+                crate::state::Reference {
+                    provider: if kind == TaskKind::Live {
+                        "microsoft_graph"
+                    } else {
+                        "manual_lab_fixture"
+                    }
+                    .into(),
+                    resource: if kind == TaskKind::Live {
+                        "drive/reference"
+                    } else {
+                        "fixture"
+                    }
+                    .into(),
+                    version: None,
+                    sha256: util::digest(b"reference"),
+                    bytes: 9,
+                },
+            )
+            .unwrap();
+        if kind == TaskKind::Live {
+            store.begin(id).unwrap();
+        }
+        (directory, store, id)
+    }
+
+    #[test]
+    fn cancellation_terminates_the_owned_job_even_if_journal_revocation_fails() {
+        let (_directory, mut store, id) = cancellation_fixture(TaskKind::Live);
+        let epoch = store.task(id).unwrap().epoch;
+        let (mut child, _job) = suspended_owned_process(Some(id));
+        let connection = rusqlite::Connection::open(store.root.join("journal.db")).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TRIGGER reject_revocation BEFORE INSERT ON audit
+             BEGIN SELECT RAISE(ABORT, 'injected journal write failure'); END;",
+            )
+            .unwrap();
+        let result = cancel(&mut store, id);
+        observe_termination(&mut child, Instant::now() + Duration::from_secs(2));
+        let Err(Error::Unknown(message)) = result else {
+            panic!("journal failure must not report successful cancellation");
+        };
+        assert!(message.contains("epoch revocation could not be durably verified"));
+        assert!(message.contains("owned named job was observed empty"));
+        assert_eq!(store.task(id).unwrap().epoch, epoch);
+        assert_eq!(store.task(id).unwrap().phase, "running");
+        store.authorize(id, epoch).unwrap();
+        connection
+            .execute_batch("DROP TRIGGER reject_revocation")
+            .unwrap();
+        assert!(cancel(&mut store, id).unwrap());
+        assert_ne!(store.task(id).unwrap().epoch, epoch);
+        assert!(store.authorize(id, epoch).is_err());
+        recover(&mut store, id).unwrap();
+        assert_eq!(store.task(id).unwrap().phase, "closed");
+        store.verify_audit().unwrap();
+    }
+
+    #[test]
+    fn cancellation_cannot_terminate_unknown_or_non_cancellable_jobs() {
+        let (_directory, mut store, published) = cancellation_fixture(TaskKind::ManualLab);
+        store
+            .close(published, Some(b"reviewed proposal"), None)
+            .unwrap();
+        let approval = store
+            .approve(published, &util::digest(b"reviewed proposal"))
+            .unwrap();
+        store.publish(published, approval).unwrap();
+        let connection = rusqlite::Connection::open(store.root.join("journal.db")).unwrap();
+        connection.execute_batch("BEGIN IMMEDIATE").unwrap();
+        for id in [Uuid::new_v4(), published] {
+            let (mut child, _job) = suspended_owned_process(Some(id));
+            assert!(matches!(cancel(&mut store, id), Err(Error::Denied(_))));
+            assert!(child.try_wait().unwrap().is_none());
+            assert!(platform::terminate_task(id).unwrap());
+            observe_termination(&mut child, Instant::now() + Duration::from_secs(2));
+        }
+        connection.execute_batch("ROLLBACK").unwrap();
     }
 
     #[test]

@@ -1,6 +1,5 @@
 use std::collections::BTreeSet;
 use std::fs::{File, OpenOptions};
-use std::io::Write;
 use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -216,16 +215,36 @@ fn native(
     if bytes.as_ref().is_some_and(|bytes| bytes.len() > 64 * 1024) {
         return Err(invalid("native authoring input exceeds its byte bound"));
     }
+    let mut _input_directories = Vec::new();
+    let stdin = if let Some(bytes) = &bytes {
+        let temporary = temporary.ok_or_else(|| {
+            invalid("native authoring input requires its private temporary directory")
+        })?;
+        _input_directories = files::pin_directories(temporary)?;
+        let path = temporary.join("author-input.json");
+        files::create_new(&path, bytes)?;
+        let (file, fingerprint) = files::pin(&path, 64 * 1024)?;
+        if fingerprint.sha256 != util::digest(bytes) {
+            return Err(Error::Denied(
+                "native authoring input changed before dispatch".into(),
+            ));
+        }
+        Stdio::from(file)
+    } else {
+        Stdio::null()
+    };
+    let deadline = Instant::now()
+        + if input.is_some() {
+            Duration::from_secs(60)
+        } else {
+            Duration::from_secs(5)
+        };
     let mut command = Command::new(program);
     command
         .args(arguments)
         .current_dir(system_directory()?)
         .env_clear()
-        .stdin(if input.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        })
+        .stdin(stdin)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     for name in [
@@ -256,24 +275,9 @@ fn native(
         .stderr
         .take()
         .ok_or(Error::Protocol("native stderr was not captured"))?;
-    let reader = thread::spawn(move || util::read_bounded(output, 1024 * 1024));
-    let error_reader = thread::spawn(move || util::read_bounded(errors, 16 * 1024));
-    let writer = if let Some(bytes) = bytes {
-        let mut pipe = child
-            .child
-            .stdin
-            .take()
-            .ok_or(Error::Protocol("native stdin was not captured"))?;
-        Some(thread::spawn(move || pipe.write_all(&bytes)))
-    } else {
-        None
-    };
-    let deadline = Instant::now()
-        + if input.is_some() {
-            Duration::from_secs(60)
-        } else {
-            Duration::from_secs(5)
-        };
+    let reader = thread::spawn(move || platform::read_pipe_until(output, 1024 * 1024, deadline));
+    let error_reader =
+        thread::spawn(move || platform::read_pipe_until(errors, 16 * 1024, deadline));
     let status = loop {
         if let Some(status) = child.child.try_wait()? {
             child.finished = true;
@@ -289,16 +293,13 @@ fn native(
     };
     let output = reader
         .join()
-        .map_err(|_| Error::Protocol("native output reader panicked"))??;
+        .map_err(|_| Error::Protocol("native output reader panicked"));
     let errors = error_reader
         .join()
-        .map_err(|_| Error::Protocol("native error reader panicked"))??;
+        .map_err(|_| Error::Protocol("native error reader panicked"));
+    let output = output??;
+    let errors = errors??;
     let status = status.ok_or(Error::Deadline)?;
-    if let Some(writer) = writer {
-        writer
-            .join()
-            .map_err(|_| Error::Protocol("native input writer panicked"))??;
-    }
     if !status.success() {
         return Err(Error::Unsupported(format!(
             "native policy helper failed with exit {status}; raw output was not logged and no elevation or permissive fallback was attempted"
@@ -1044,6 +1045,49 @@ pub fn status(store: &Store) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_input_is_exact_bounded_no_replace_file_not_a_blocking_pipe() {
+        let directory = tempfile::tempdir().unwrap();
+        platform::protect_directory(directory.path(), None).unwrap();
+        let missing = directory.path().join("not-present.exe");
+        let input = json!("x".repeat(64 * 1024 - 2));
+        let expected = serde_json::to_vec(&input).unwrap();
+        assert_eq!(expected.len(), 64 * 1024);
+        assert!(matches!(
+            native(&missing, &[], Some(&input), Some(directory.path())),
+            Err(Error::Io(_)),
+        ));
+        let path = directory.path().join("author-input.json");
+        assert_eq!(std::fs::read(&path).unwrap(), expected);
+        assert!(
+            native(
+                &missing,
+                &[],
+                Some(&json!("replacement")),
+                Some(directory.path())
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), expected);
+    }
+
+    #[test]
+    fn native_input_refuses_missing_private_directory_and_one_byte_over_budget() {
+        let directory = tempfile::tempdir().unwrap();
+        let missing = directory.path().join("not-present.exe");
+        assert!(matches!(
+            native(&missing, &[], Some(&json!({})), None),
+            Err(Error::Invalid(_))
+        ));
+        let input = json!("x".repeat(64 * 1024 - 1));
+        assert_eq!(serde_json::to_vec(&input).unwrap().len(), 64 * 1024 + 1);
+        assert!(matches!(
+            native(&missing, &[], Some(&input), Some(directory.path())),
+            Err(Error::Invalid(_)),
+        ));
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+    }
 
     fn native_policy(id: Uuid) -> Value {
         json!({

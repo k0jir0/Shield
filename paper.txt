@@ -516,6 +516,166 @@ eight scoped LPAC observations successfully with independently checked image
 hashes. These source results do not retroactively replace the earlier recorded
 82-test validation or establish a GitHub Actions run for this increment.
 
+## TDD hardening: persistent journal budgets and local file boundaries
+
+The next implementation increment used executed failing regression tests,
+not manufactured acceptance records. Four new journal tests failed before
+the fix. In particular, the live connection returned a maximum page count of
+4,294,967,294 instead of 16,384: SQLite's connection-local page and retained
+journal limits were set during creation, then lost as initialization reopened
+the database. A real SQLite write beyond the intended 64 MiB database budget
+was also accepted.
+
+One shared connection initializer now runs both when creating state and on
+every subsequent open, including concurrent callers. It requires 4096-byte
+pages, refuses an already oversized database, applies/readbacks the exact
+16,384-page ceiling, reapplies the 1 MiB retained journal setting, and preserves
+the existing busy timeout, foreign keys and FULL synchronous writes. Changed
+page sizes produce an explicit unsupported-boundary error; already oversized
+state produces a quota error. No silent VACUUM, page-size migration, truncation,
+audit deletion, authority reset or recovery replay is performed.
+
+Tests cover initial/reopened/concurrent connections, a real over-budget
+SQLite allocation and its statement rollback without advancing task authority
+or audit records, an unsupported 8192-byte-page database, and refusal without
+truncating a pre-existing oversized database. The fixed budget is for the main
+database, not all process memory or files. SQLite's `journal_size_limit` limits
+retained WAL/journal size after reset; it is not a hard peak-WAL cap, especially
+with a pinned reader. Total storage/retention enforcement, bounded export
+memory and exhaustion-safe operational recovery are not thereby qualified.
+
+Three additional file-boundary tests also failed before implementation.
+Windows console aliases and COM/LPT device names using superscript 1, 2 and 3
+were not fully refused; explicit dot segments were silently normalized by
+`Path::components`; and an actual NTFS file with `FILE_ATTRIBUTE_OFFLINE` was
+accepted for capture, pinning and publication. Shared validation now rejects
+these device/alias spellings before filesystem access, checks dot segments in
+the original spelling, and rejects reparse/offline/recall-on-open/recall-on-data
+attributes on ancestors and the opened object. Ordinary similar names such as
+COM10.txt remain supported. The offline-file test uses only an owned temporary
+file, verifies its attribute, checks all three refusal paths, restores its
+original attributes and verifies the unchanged positive-control bytes.
+This tests the declared attribute boundary, not every real cloud filter,
+hydration race or hostile mapped writer.
+
+Initial validation on 2026-10-29: all 120 default software/checker tests passed in
+both debug and optimized release: 85 library, 4 CLI parsing, 24 checker and
+7 actual native/CLI regressions per configuration, with zero failures/ignores.
+Strict all-target/all-feature Clippy and formatting passed. Those current
+binaries executed normally; no host policy exception or workaround was used.
+The earlier recorded error-4551 blocked binaries and their hashes remain
+historical failed validation attempts, not retroactively passing runs.
+
+All four exact R0 acceptance contracts were then executed and failed with the
+intended missing-`SHIELD_ACCEPTANCE_BUNDLE` error: scope/operators,
+resource/authority matrix, budgets/stop rules, and admission/disclosure.
+The user was asked for the reviewed scope/bundle, an authorized disposable
+Windows/recovery environment, and owned test provider/model resources with
+finite budgets; no usable decisions or resources were supplied. This is a
+concrete R0 stop, not permission to change shared-host policies, spend money,
+use production accounts or invent thresholds/evidence. No authentic acceptance
+gate is made green by these local fixes, and future extensions stay outside
+the selected Windows pilot unless explicitly selected and evidenced.
+Enforcing the database budget also required checking cancellation's failure
+path. Previously the CLI returned immediately if durable epoch revocation
+failed, before attempting owned-job termination. A new executed regression
+observed an actual owned, suspended inert process surviving that cancellation.
+The CLI now uses a shared cancellation routine that first authenticates the
+task and checks its cancellation eligibility, with the same eligibility check
+repeated inside transactional revocation. A journal failure still attempts
+termination and observes the exact owned named job. It returns an explicit
+unknown/partial outcome: epoch revocation could not be durably verified,
+broker authority needs reconciliation and remote effects are not recalled.
+Native termination failure after durable revocation is also explicit, not a
+success-shaped cancellation. Unknown tasks and completed/uncertain publication
+remain ineligible even while another connection holds the writer lock.
+
+The cancellation regressions use an owned temporary journal, a fault-injection
+SQLite trigger (not a fake claim of genuine disk exhaustion), the real running
+lease/epoch APIs and real suspended native child/job handles. They verify
+termination while the old epoch remains durable, truthful partial reporting,
+later successful revocation/recovery, and preservation of unknown/published
+jobs under writer contention. An intermediate ownership-test binary was
+blocked before execution by existing Application Control, error 4551; that
+attempt is not counted as a demonstrated RED or passing test. No policy
+exception, binary relocation or hash-only rewrite was used.
+
+Final validation passed all 122 default tests in both debug and release:
+87 library, 4 CLI parsing, 24 checker and 7 actual native/CLI regressions per
+configuration, zero failed/ignored. All-target/all-feature strict Clippy and
+formatting pass. Nine tests were added in total; eight first reproduced
+existing storage/file/cancellation failures, and the ownership guard test
+preserves denial under writer contention. This does not qualify every
+exhaustion/recovery state: an unreadable or oversized journal cannot establish
+task ownership, and an unverified epoch cannot be called withdrawn.
+These 122-test results are local, not a new hosted run for this increment.
+The existing Windows workflow's strict lint now includes all Cargo features,
+so CI compiles/checks the opt-in acceptance test bodies too. Its ordinary
+regression run still does not fabricate a lab bundle or invoke unauthenticated
+real acceptance contracts as software passes.
+
+## TDD hardening: bounded pipe I/O and observable hosted failures
+
+The next increment found that a native helper's process deadline did not
+bound its output-reader joins: a retained pipe writer could prevent EOF after
+the helper exited. The same mechanism affected the interactive worker reader
+and self-test cleanup. Held-writer, expired-deadline, non-pipe and interactive
+frame regressions were actually observed failing before their respective
+fixes. Exact-EOF and one-byte-over-bound controls preserve the byte contract.
+
+One shared exclusive-reader adapter now polls Windows PeekNamedPipe, reads
+only already available bytes, and enforces an absolute monotonic deadline
+without detaching a blocked reader. It serves bounded native stdout/stderr
+drains, incremental worker frames and self-test output. Interactive frames
+must arrive before EOF; a separate retained-writer assertion checks that the
+next read still expires. Native helper stdout/stderr share the process deadline
+and both reader threads are joined before their results are propagated.
+The adapter assumes sole read ownership and responsive native calls; this is
+not a hard real-time proof for every Windows I/O operation.
+
+Native authoring no longer writes stdin on a potentially blocked thread.
+At most 64 KiB of exact serialized JSON is captured create-new under the
+protected per-plan temporary directory, with pinned ancestors, read-only
+file pinning and hash verification before passing the file as stdin. Tests
+verify exact-limit input, refusal to replace existing input, missing-private-
+directory refusal and one-byte-over-limit refusal before file/spawn side
+effects. They use a nonexistent helper, not local PowerShell execution.
+The existing PowerShell invocation and execution policy are unchanged.
+
+The native/CLI regression harness also replaces indefinite wait_with_output
+with a 60-second owned-child deadline and bounded output drains. Its guard
+terminates/reaps unfinished owned children; a suspended target/control test
+verifies termination of the target without terminating the unrelated control.
+The scoped LPAC output reader now has its own absolute deadline.
+
+Published commit 3275d4f4d405d436a4ef5a0ab2e7fdc94f5f1a26's hosted run,
+https://github.com/k0jir0/Shield/actions/runs/40932535259, was cancelled at the
+45-minute job limit. Its tail shows a surviving CLI test process and buffered
+child logs, not the particular stuck test or a conclusive cause. The pipe
+regressions demonstrate a real unbounded-wait mechanism, not attribution of
+that cancellation. The hosted wrapper now waits at most 25 minutes for its
+owned root, requests termination of that child tree on timeout, waits ten
+seconds to observe root termination, fails explicitly, and prints captured
+stdout/stderr in finally. It was parsed, not executed locally or in a fresh
+hosted run. Hosted-only and standard-user safeguards remain unchanged.
+
+Nine tests were added after the 122-test increment: six pipe cases, two native
+input cases and one owned-subprocess deadline case. An intermediate full
+debug run passed 130 tests; 126 release tests passed while its four parsing
+tests were blocked by Application Control. After wiring the shared reader
+through interactive worker/self-test paths, the latest full debug run passed
+all 131 tests: 95 library, 4 parsing, 24 checker and 8 actual native/CLI.
+The latest release library and checker binaries were blocked before execution
+by existing Application Control, error 4551: 119 tests were not run. Separate
+normal release targets passed 4 parsing and 8 actual native/CLI tests. Thus
+the current release result is 12 passed and 119 blocked, not 131 passed.
+Strict all-target/all-feature Clippy and formatting pass. No binary was
+relocated or modified merely to change its hash, and no policy was bypassed.
+At validation time these changes were local/uncommitted; no fresh hosted validation or real
+acceptance gate is claimed. Missing R0 decisions, authorized disposable lab
+resources, authentic provider observations and unfinished release features
+still prevent full product completion.
+
 ## Executable TDD feature and acceptance architecture
 
 The test architecture lives in `tests/acceptance.rs` and its `catalog.rs`,
