@@ -7,6 +7,15 @@ task permissions with separate approval before publishing changes. The goal is
 to limit unauthorized actions even when an approved AI worker is manipulated,
 rather than relying on the model to follow instructions.
 
+The problem Shield targets is the gap between allowing software to run and
+controlling what it is authorized to do. A compromised application, hijacked AI
+workflow, or prompt injection in untrusted content can misuse legitimate access
+to files, credentials, networks, and connected accounts to disclose data or make
+unauthorized changes. These attacks may use an existing process or account
+without launching a new malicious executable. Application admission alone cannot
+govern every subsequent action, and instructions to an AI model are not an
+authorization boundary.
+
 Experimental Windows/Rust implementation of part of the integrated pilot defined
 in [start.txt](start.txt). **This is not a completed endpoint-security product,
 an accepted integrated pilot, or a solution to every intrusion. Do not deploy it
