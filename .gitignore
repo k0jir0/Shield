@@ -1,0 +1,6 @@
+/target/
+/.shield-state/
+*.db
+*.db-shm
+*.db-wal
+*.secret
