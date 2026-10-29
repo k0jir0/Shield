@@ -254,6 +254,11 @@ enum VerifierAction {
 enum EndpointAction {
     /// Report native authoring prerequisites without changing policies or requiring state.
     AuthoringSupport,
+    /// Record ordinary inert-control launches and read-only prerequisites; never an enforcement pass.
+    Baseline {
+        #[arg(long)]
+        output: PathBuf,
+    },
     /// Build a reviewed native baseline plus exact EXE/DLL hash rules; does not install.
     Prepare {
         #[arg(long)]
@@ -320,8 +325,8 @@ fn endpoint(store: &mut Store, action: EndpointAction) -> Result<()> {
             plan,
             binding.approval(),
         )?),
-        EndpointAction::AuthoringSupport => {
-            unreachable!("authoring support does not need enrolled state")
+        EndpointAction::AuthoringSupport | EndpointAction::Baseline { .. } => {
+            unreachable!("native prerequisites and baselines do not need enrolled state")
         }
     }
 }
@@ -457,6 +462,19 @@ fn execute() -> Result<()> {
         Action::Endpoint {
             action: EndpointAction::AuthoringSupport,
         } => display(&shield::endpoint::authoring_support()?),
+        Action::Endpoint {
+            action: EndpointAction::Baseline { output },
+        } => {
+            let report = shield::baseline::run(&absolute(&output)?)?;
+            display(&report)?;
+            if !report.all_controls_valid {
+                return Err(Error::Denied(
+                    "ordinary-launch baseline is invalid; retained report is not a protection pass"
+                        .into(),
+                ));
+            }
+            Ok(())
+        }
         Action::Worker => shield::worker::run(),
         Action::VerifierService {
             profile,
@@ -826,6 +844,17 @@ mod tests {
             );
         }
         assert!(Cli::try_parse_from(["shield", "endpoint", "authoring-support"]).is_ok());
+        assert!(Cli::try_parse_from(["shield", "endpoint", "baseline"]).is_err());
+        assert!(
+            Cli::try_parse_from([
+                "shield",
+                "endpoint",
+                "baseline",
+                "--output",
+                r"C:\lab\new-baseline"
+            ])
+            .is_ok()
+        );
     }
 
     #[test]

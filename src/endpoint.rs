@@ -243,7 +243,7 @@ fn native(
         command.env("TEMP", temporary).env("TMP", temporary);
     }
     let mut child = NativeChild {
-        child: command.spawn()?,
+        child: platform::spawn_command(&mut command)?,
         finished: false,
     };
     let output = child

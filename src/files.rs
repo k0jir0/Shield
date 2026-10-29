@@ -71,6 +71,19 @@ pub fn check_no_reparse(path: &Path) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn pin_directories(path: &Path) -> Result<Vec<File>> {
+    check_no_reparse(path)?;
+    path.ancestors()
+        .map(|parent| {
+            Ok(OpenOptions::new()
+                .read(true)
+                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+                .open(parent)?)
+        })
+        .collect()
+}
+
 fn information(file: &File) -> Result<BY_HANDLE_FILE_INFORMATION> {
     let mut filesystem = [0_u16; 32];
     if unsafe {
@@ -174,16 +187,10 @@ pub struct Publication {
 impl Publication {
     pub fn lock(path: &Path, expected: &Fingerprint, limit: u64) -> Result<Self> {
         check_no_reparse(path)?;
-        let mut parents = Vec::new();
-        for parent in path.ancestors().skip(1) {
-            parents.push(
-                OpenOptions::new()
-                    .read(true)
-                    .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
-                    .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
-                    .open(parent)?,
-            );
-        }
+        let parents = pin_directories(
+            path.parent()
+                .ok_or_else(|| invalid("publication target has no parent directory"))?,
+        )?;
         let mut file = OpenOptions::new()
             .read(true)
             .write(true)

@@ -430,6 +430,332 @@ marker or another native policy's block alone is insufficient. Exercise ordinary
 and alternate launch, scripts/delegation, updates, reboot/removal and final
 composed helpers before E0/E1 acceptance. No such post-install pass exists.
 
+## Reproducible ordinary-launch baseline
+
+The state-independent `endpoint baseline` command records the two ordinary-launch
+positive controls before an authorized native comparison. It does not initialize
+or open Shield state, install policies/services, change native protections, access
+provider resources, or create/read credentials. Run it from an unelevated session
+after `cargo build --release --locked`, with the trusted inert
+`shield-admission-allow.exe` and `shield-admission-deny.exe` beside `shield.exe`:
+
+```powershell
+& .\target\release\shield.exe endpoint baseline --output "$env:TEMP\Shield-baseline-$([guid]::NewGuid())"
+```
+
+The output must be a new absolute local-drive directory with an existing
+non-reparse parent. The command creates/protects that directory and retains
+`started.json` before native observations or launch attempts. Only a final
+`report.json` indicates completion. Startup/input/observation failures or process
+interruption can leave only an incomplete record and owned fixtures; absence of
+a completed report never means success. Existing directories are refused, not
+reused, overwritten, or automatically retried.
+
+Each role gets one direct `CreateProcess`-backed ordinary launch, a fresh
+64-hexadecimal-character nonce, and an owned `Shield-admission-<nonce>` marker
+directory. These are not sandbox launches or denial tests. Each image is read
+with a 128 MiB bound, held against ordinary writes/deletion, hashed before/after
+the run, and its ancestor directories pinned. Cargo's hardlinked inert artifacts
+are permitted here; this does not relax the single-link note/publication or
+publisher-verification contracts. A five-second process deadline terminates and
+reaps the owned child; failure to terminate is reported explicitly, not treated
+as a block. This is an engineering process-wait bound, not a whole-command
+latency guarantee. The inert fixtures are trusted build artifacts, not arbitrary
+hostile programs or a descendant-process containment test.
+
+The controller independently reads each marker with the existing NTFS,
+non-reparse, single-link file checks and a 256-byte bound. A valid control
+requires exit code zero and the exact compiled role plus nonce and newline.
+A zero exit without the correct marker, a timeout, launch failure, or observer
+error invalidates it. Native launch errors retain their OS code when available;
+they are not attributed to Shield or classified as successful prevention.
+Fixture stdout/stderr is not captured; process outcomes and marker errors are
+recorded instead.
+
+The schema-versioned report includes run ID/time, controller and probe SHA-256,
+Windows build/revision/edition/architecture and daily-user SID, per-role nonce
+and marker path, elapsed process time, launch/marker outcomes, and attempted,
+valid and invalid counts. Read-only authoring support and native App Control
+inventory each retain an explicit observed/unavailable result; access denied is
+not converted to healthy state. With both controls valid, unavailable authoring
+prerequisites or inventory yield
+`stop_native_prerequisites_unavailable_or_unverified`; otherwise the decision is
+`requires_authorized_lab_comparison`, never a feasibility acceptance. Invalid
+controls yield `stop_invalid_baseline`, a retained report, and a nonzero CLI exit.
+A zero exit means only that both ordinary-launch controls were valid.
+
+`effect_gate_pass` is always false. A completed baseline does not certify
+native-value improvement, post-install allowed/denied effects, correct-policy
+event attribution, alternate launch routes, reboot/update/recovery, or E0/E1.
+The observer is the local unelevated controller, not an independent/admin-proof
+effect observer. Absent markers do not prove absence of transient effects.
+No native denial is inferred merely from a failed launch. Retained paths, SIDs
+and inventory are local diagnostic identity data; review before sharing, and
+do not upload them automatically.
+
+Regression coverage includes actual successful controls and exact markers,
+refusal to reuse a completed/incomplete directory, a successful wrong-role
+executable producing an invalid baseline, native launch failure with an explicit
+observer error, and actual deadline termination/reaping of an owned test child.
+
+Validation of this increment on 2026-10-29: all 88 tests passed in debug and
+release (77 library, 4 command-parsing, 7 actual native/CLI workflows), with zero
+ignored tests. Formatting, strict all-target Clippy and the locked release build
+passed. The first release run, concurrent with debug validation, encountered an
+output-reader timeout in the existing offline LPAC exchange test; that test
+passed in isolation and the complete release suite passed on rerun without
+changing the test's timeout or runtime guards. This is not a qualified timing
+guarantee, and the failed attempt remains part of the evidence.
+
+Separate direct debug/release baseline invocations both observed two valid
+controls, with marker bytes and controller/probe hashes independently checked.
+Both returned `stop_native_prerequisites_unavailable_or_unverified`: native
+inventory was unavailable and authoring support reported missing prerequisites.
+Neither passed an enforcement gate. Both changed executables also reran all
+eight scoped LPAC observations successfully with independently checked image
+hashes. These source results do not retroactively replace the earlier recorded
+82-test validation or establish a GitHub Actions run for this increment.
+
+## Executable TDD feature and acceptance architecture
+
+The test architecture lives in `tests/acceptance.rs` and its `catalog.rs`,
+`evidence.rs`, and `checker_tests.rs` modules. It adds no runtime authority or
+dependencies. The catalog is the executable feature/route coverage matrix:
+100 named scenarios, each with a gate, layer, assertion class, required variants,
+intent, enforcer, observer, and recovery mapping. This is coverage of the
+documented intended scope, not proof of exhaustive mediation or real-world
+attack prevalence.
+
+- 82 mandatory pilot scenarios cover all twelve gates, ordinary endpoint
+  paths without an AI dependency, real client/model/provider feasibility,
+  hostile-worker and typed-broker boundaries, grants/approvals/shared quotas,
+  native WFP/App Control state and effects, input/disclosure/URL custody,
+  persistence/re-import, publication/interruption, direct provider callers,
+  surviving capabilities, composition, incidents, recovery and benign users.
+- 8 release scenarios cover real download/install/update/uninstall with native
+  protections intact, package/policy/metadata trust separation, exact pinned
+  publisher checks, authenticated metadata/version floor, rotation/outages,
+  interrupted deployment, privacy/retention, and maintenance ownership.
+- 5 conditional scenarios cover protected verifier authentication and reviewed
+  cleanup, signed-base-policy recovery, sender-constrained tokens, and human
+  authentication. Selected controls become mandatory at their E0/M0/C1 gate;
+  higher gates cannot bypass their required evidence.
+- 5 future scenarios cover local-only flow control, optional local-AI value and
+  held-out quality, additional clients, and additional platforms. They remain
+  unsupported unless explicitly selected and evidenced. The current program
+  remains Windows-only and custom-client-only.
+
+### Red, green, refactor workflow
+
+1. Select the catalog scenario and review its predeclared assertion/variants.
+   Record actual R0/L0 decisions and numeric budgets before running that case.
+2. Run its opt-in evidence contract and observe RED for missing required real
+   evidence. Missing lab access is not a successful skip. For example:
+
+   ```powershell
+   cargo test --locked --features acceptance --test acceptance catalog::live_contracts::pilot_r0_scope_and_operators -- --exact
+   ```
+
+3. Implement the smallest production behavior and authorized real probe/observer
+   adapter needed for that scenario, adding ordinary deterministic regression
+   tests alongside it. These external lab/provider adapters are not supplied by
+   the replay checker. Do not edit synthetic checker fixtures into lab results.
+4. Collect valid independent effects/legitimate outcomes under the frozen plan.
+   Review the non-secret raw observations and producer identity before replay.
+   Fix the implementation until both software and applicable evidence contracts
+   are green; never fit budgets to the measured failures.
+5. Refactor with software tests green and re-run every affected acceptance
+   scenario after security-relevant drift. A changed specification, paper,
+   harness, profile, or workload invalidates the corresponding bindings.
+
+Default developer/CI tests run the existing software regressions and 24 checker
+regressions. Named real-observer contracts are compiled/executed only with the
+explicit Cargo `acceptance` feature; none uses `#[ignore]`, unconditional failure,
+or a missing-input success fallback. Discover the cases with:
+
+```powershell
+cargo test --locked --features acceptance --test acceptance -- --list
+```
+
+After authorized collection and review, point `SHIELD_ACCEPTANCE_BUNDLE` to an
+absolute local NTFS evidence directory, separate from runtime state/secrets:
+
+```powershell
+$env:SHIELD_ACCEPTANCE_BUNDLE = 'C:\authorized-lab\reviewed-evidence'
+cargo test --locked --features acceptance --test acceptance catalog::live_contracts::pilot_
+cargo test --locked --features acceptance --test acceptance catalog::live_contracts::release_
+```
+
+Unselected conditional/future tests explicitly fail rather than silently skip.
+Run their named filters only for selected support claims; selecting one also
+makes its scenarios mandatory in the plan and in dependent gate traversal.
+Running all features/all tests deliberately includes unresolved future claims;
+it is not equivalent to the ordinary green software CI command.
+All-feature compilation/lint is safe without executing those acceptance tests:
+
+```powershell
+cargo clippy --locked --all-targets --all-features -- -D warnings
+```
+
+### Non-secret evidence contract
+
+The definitive versioned schemas are the strict Serde types in `evidence.rs`.
+A bundle contains `plan.json`, `runs/<catalog-case-id>.json`, and
+`artifacts/<lowercase-sha256>.blob`. Artifact references contain only `sha256`,
+not arbitrary filesystem paths or download URLs. The reader checks local NTFS,
+non-reparse/single-link files, canonical digests and exact content hashes.
+Plan/run/artifact reads are bounded to 1 MiB/4 MiB/2 MiB respectively.
+
+The plan records schema version, owner, freeze/expiry times, exact specification,
+paper and harness digests, selected extensions, and per-case trials/variants,
+numeric minimums/maximums and an explicit comparison mode where relevant.
+Eight digest-bound declarations retain scope/operators, identity/resource/verb
+matrix, lab authorization/recovery, admission/native baseline, client/provider
+disclosure, budgets/stop rules, secret custody/cleanup, and response/maintenance
+ownership. They are reviewed external documents, not self-executing authority.
+Every mandatory pilot case and every selected conditional/future case must be
+planned. Trial counts are explicitly 1..64 per required variant; no numeric
+acceptance values are silently chosen for the operator.
+
+Each variant binds exact profile and workload artifacts. Standalone/composed
+endpoint and native/equivalent-native/Shield comparison variants must retain
+the same workload. Each run record binds the plan digest and case to its exact
+trial list. Trials bind unique non-nil run IDs, variant, profile/workload
+digests, timestamps after plan freeze and before expiry, and an observation.
+Run IDs cannot be reused across required predecessor records.
+
+Observations bind run/case/variant/plan/profile, subject and observer principals
+and distinct trust domains, continuous coverage of the complete trial interval,
+explicit probe validity, required native/provider/review/user-study sources,
+numeric measurements, and 1..16 non-secret raw-evidence artifacts. Invalid,
+skipped, unknown, already-native-blocked, synthetic-source, missing or gapped
+observations cannot qualify. Actual raw records must substantiate the producer's
+claims, not merely contain success-shaped fields.
+
+Counts are checked sums; timing/size/cost measurements are per-variant maxima.
+Overflow fails rather than wrapping/saturating. Utility requires a positive
+predeclared completion minimum, at most one completion per trial, and independent
+variant denominators. Safety requires zero forbidden effects and valid positive
+controls for every trial. Fault handling, detection, recovery and utility are
+separate assertions: detection may follow an effect, fault refusal is not task
+completion, and remaining claimed authority blocks recovery.
+Performance budgets explicitly cover footprint bytes, peak memory bytes,
+CPU/startup/p95 broker milliseconds, and total cost in the currency/measurement
+scope named by the budget declaration. Usability additionally hard-requires zero
+manual security editing and zero extra unchanged-launch prompts.
+
+Native comparisons require legitimate utility and measured incremental
+protection over both baselines, or an explicitly selected percentage improvement
+in operator effort while retaining equivalent protection. They do not credit
+already-native blocks. Optional classifier quality derives precision/recall/
+false-positive basis points from held-out TP/FP/TN/FN counts, with explicit
+time/energy/quality budgets; undefined rates cannot default to success.
+The exact R0 -> L0 -> E0/A0/C0 -> M0 -> E1/M1/C1 -> I1 -> O1 -> P0 graph
+is traversed before accepting downstream records. Release readiness depends on
+all P0 scenarios. Future extensions require the baseline P0 prerequisites.
+
+### Important limit: replay validation is not observer authentication
+
+These are executable acceptance-record contracts, not turnkey end-to-end
+Windows/provider drivers or cryptographic attestations. Hashes detect changed
+bytes; names, declared sources, timestamps and trust-domain strings cannot prove
+who produced them or whether an effect really happened. An operator must
+authenticate producers and independently review actual complete raw evidence.
+Opaque declarations/raw artifacts are digest-checked, not semantically proven
+by the checker. A forged bundle can lie about measurements; a passing replay
+therefore does not automatically award a milestone, authorize runtime actions,
+or change Shield's always-unverified product status.
+
+Checker tests deliberately construct synthetic temporary records to test
+thresholds, missing inputs, wrong bindings, replay, observer gaps, source
+substitution, drift, overflow, paired variants, dependency withdrawal, native
+attribution and strict schemas. Their green results validate checker behavior,
+not deployment, account enforcement, classifier accuracy or product readiness.
+The real-observer contract was explicitly observed RED without a bundle.
+No native policy/service changes, provider calls, credentials, or spending are
+performed by this test architecture.
+
+Recorded TDD validation on 2026-10-29: all 113 default software/checker tests
+passed in debug and release before the final test-only edge-case additions.
+Those additions cover cross-record UUID replay, selected conditional controls
+blocking downstream gates, and empty evidence artifacts. The final 24 checker
+tests pass in debug; the final optimized test executable compiled but was
+blocked before execution by existing Windows Application Control (error 4551).
+Code Integrity events 3077 and 3033 independently identify that executable.
+Its SHA-256 is
+`9019480FE2B28D6616A0483A4442AD9DB39E7851DC9AEE113E316BB5DE4941A0`.
+This is a blocked validation attempt, not a release-test pass or evidence of
+Shield enforcement. No policy exception, executable relocation, or other
+execution-policy workaround was attempted. Final formatting and strict
+all-target/all-feature Clippy pass; discovery finds exactly 100 live contracts.
+The exact R0 scope contract fails with the intended missing-bundle RED error.
+Final optimized checker execution still requires an authorized environment
+that permits the test binary; no authentic acceptance bundle was supplied.
+After the documentation refresh, the debug checker binary also recompiled
+successfully but was blocked before execution with error 4551. The preceding
+24/24 debug checker result is retained; neither subsequent blocked attempt
+is represented as a passing run. Final documentation links and diff whitespace
+checks pass. No further test-execution attempts or policy changes were made.
+
+## Coordinated child-process creation
+
+An owned native regression reproduced a concrete inherited-handle exposure:
+an ordinary child launched while an unrelated inheritable pipe was open could
+write the 24-byte test marker through that pipe. This supplies a mechanism for
+delayed pipe EOF and unwanted helper access; it does not conclusively trace the
+earlier offline LPAC output-reader timeout to that mechanism.
+
+Rust 1.99.1's Windows process implementation uses a private mutex for its own
+temporary inheritable stdio handles. Shield's raw `CreateProcessW` worker path
+is outside that mutex. The worker's explicit inherited-handle list restricts
+what the worker receives, but does not stop another ordinary child from
+inheriting a worker pipe during the host's temporary inheritance window.
+
+Shield now uses one process-creation mutex for both the raw sandbox path and
+its ordinary-child helper. The sandbox holds it from before pipe creation until
+the temporary child-side handles are closed, including early-return cleanup.
+The ordinary helper holds it through Rust's spawn call, not through child
+execution or waiting. Endpoint/native policy helpers, admission baseline
+controls, the worker's child-attempt probe, deadline test fixtures, and CLI test
+launches use this shared path. Poisoned coordination refuses creation explicitly.
+No deadline, worker capability, job limit, enrollment requirement, or native
+execution policy was loosened.
+
+The regression retains an intentional uncoordinated positive control with exact
+marker transfer. Its coordinated case verifies that creation waits until the
+temporary writer closes and observes no marker transfer through that unrelated
+pipe. The test failed before the fix with 24 observed marker bytes and passed
+afterward. The original CLI/LPAC tests remain concurrent; they are not marked
+ignored or globally serialized to conceal the race.
+
+This coordinates Shield-managed creation within one process. It is not a
+Windows-wide inheritance ban, a defense against hostile code already executing
+inside the broker, or a guarantee about future dependencies that create
+children outside this helper. New process-creation paths must participate;
+the worker still requires its explicit two-handle list and native token/job
+verification. Time spent waiting for the creation mutex is not a qualified
+startup-latency guarantee.
+
+Validation on 2026-10-29: all 89 tests passed in both debug and release
+(78 library, 4 command-parsing, 7 actual native/CLI), with no ignored tests.
+Formatting, strict all-target Clippy and the locked release build passed.
+Five additional complete release CLI repetitions passed all seven tests each
+(35 executions); the LPAC exchange retained its original timeout. The final
+debug/release executables each passed eight scoped LPAC observations and both
+ordinary admission controls, with hashes and exact marker bytes independently
+verified. Native inventory remained unavailable and native authoring support
+remained absent, so the baseline decision remained an explicit stop. These
+changes are locally verified, not a new GitHub Actions or protection-gate pass.
+
+Completion remains blocked on the declared R0/L0 decisions and resources.
+The continuation request did not supply an accessible authorized disposable
+Windows lab, recovery/operator authorization, real test-only provider resources,
+or finite feasibility/acceptance budgets. Missing answers were not treated as
+permission to install computer-wide controls on the shared workstation, spend
+funds, access production accounts, invent acceptance thresholds, or waive gates.
+More locally passing code cannot substitute for E0/A0/C0 feasibility or the
+subsequent E1/M1/C1/I1/O1/P0 outcomes.
+
 ## Opt-in protected read-only verifier
 
 **Source implementation, not a deployed or qualified boundary.** This service

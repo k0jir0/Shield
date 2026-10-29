@@ -6,6 +6,9 @@ rust-version = "1.99"
 default-run = "shield"
 description = "Windows-first endpoint admission and explicitly scoped agent containment controller"
 
+[features]
+acceptance = []
+
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
 hex = "0.4"

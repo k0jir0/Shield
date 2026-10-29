@@ -36,9 +36,9 @@ pub fn run() -> Result<()> {
             credential_target,
             loopback_port,
         } => {
-            let child = Command::new(std::env::current_exe()?)
-                .arg("__worker")
-                .spawn();
+            let child = crate::platform::spawn_command(
+                Command::new(std::env::current_exe()?).arg("__worker"),
+            );
             let child_spawned = match child {
                 Ok(mut child) => {
                     child.kill()?;

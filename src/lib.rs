@@ -1,3 +1,4 @@
+pub mod baseline;
 pub mod endpoint;
 pub mod error;
 pub mod files;

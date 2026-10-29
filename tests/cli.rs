@@ -1,6 +1,6 @@
 use std::io::Cursor;
 use std::path::Path;
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -10,12 +10,24 @@ use shield::{platform, selftest, util};
 use uuid::Uuid;
 
 fn run(state: &Path, arguments: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_shield"))
-        .arg("--state")
-        .arg(state)
-        .args(arguments)
-        .output()
-        .unwrap()
+    command_output(
+        Command::new(env!("CARGO_BIN_EXE_shield"))
+            .arg("--state")
+            .arg(state)
+            .args(arguments),
+    )
+}
+
+fn command_output(command: &mut Command) -> Output {
+    platform::spawn_command(
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    )
+    .unwrap()
+    .wait_with_output()
+    .unwrap()
 }
 
 fn success(state: &Path, arguments: &[&str]) -> Output {
@@ -31,6 +43,144 @@ fn success(state: &Path, arguments: &[&str]) -> Output {
 
 fn json(state: &Path, arguments: &[&str]) -> Value {
     serde_json::from_slice(&success(state, arguments).stdout).unwrap()
+}
+
+#[test]
+fn ordinary_admission_baseline_retains_exact_controls_without_opening_state_or_replaying() {
+    let directory = tempfile::tempdir().unwrap();
+    let state = directory.path().join("unused-state");
+    let report_directory = directory.path().join("baseline");
+    let arguments = [
+        "endpoint",
+        "baseline",
+        "--output",
+        report_directory.to_str().unwrap(),
+    ];
+    let report = json(&state, &arguments);
+    assert_eq!(report["phase"], "ordinary_launch_baseline");
+    assert_eq!(report["attempted"], 2);
+    assert_eq!(report["valid"], 2);
+    assert_eq!(report["invalid"], 0);
+    assert_eq!(report["all_controls_valid"], true);
+    assert_eq!(report["effect_gate_pass"], false);
+    assert!(!state.exists());
+    for (index, role) in ["allow", "deny"].iter().enumerate() {
+        let probe = &report["probes"][index];
+        assert_eq!(probe["role"], *role);
+        assert_eq!(probe["launch"]["state"], "exited");
+        assert_eq!(probe["launch"]["code"], 0);
+        assert_eq!(probe["marker_exact"], true);
+        let marker = Path::new(probe["marker"].as_str().unwrap());
+        assert_eq!(
+            std::fs::read(marker).unwrap(),
+            format!(
+                "shield-admission-{role} {}\n",
+                probe["nonce"].as_str().unwrap()
+            )
+            .as_bytes()
+        );
+        assert_eq!(
+            probe["image_sha256"],
+            util::file_digest(Path::new(probe["image"].as_str().unwrap())).unwrap()
+        );
+    }
+    let saved = std::fs::read(report_directory.join("report.json")).unwrap();
+    let retained: Value = serde_json::from_slice(&saved).unwrap();
+    assert_eq!(retained, report);
+    assert!(report_directory.join("started.json").is_file());
+    let repeated = run(&state, &arguments);
+    assert!(!repeated.status.success());
+    assert!(repeated.stdout.is_empty());
+    assert_eq!(
+        std::fs::read(report_directory.join("report.json")).unwrap(),
+        saved
+    );
+    assert_eq!(std::fs::read_dir(&report_directory).unwrap().count(), 4);
+    assert!(!state.exists());
+}
+
+#[test]
+fn ordinary_admission_baseline_rejects_a_successful_wrong_control_and_retains_failure() {
+    let directory = tempfile::tempdir().unwrap();
+    let state = directory.path().join("unused-state");
+    let image = directory.path().join("shield.exe");
+    std::fs::copy(env!("CARGO_BIN_EXE_shield"), &image).unwrap();
+    for role in ["allow", "deny"] {
+        std::fs::copy(
+            env!("CARGO_BIN_EXE_shield-admission-allow"),
+            directory
+                .path()
+                .join(format!("shield-admission-{role}.exe")),
+        )
+        .unwrap();
+    }
+    let report_directory = directory.path().join("invalid-baseline");
+    let output = command_output(
+        Command::new(image)
+            .arg("--state")
+            .arg(&state)
+            .args(["endpoint", "baseline", "--output"])
+            .arg(&report_directory),
+    );
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("baseline is invalid"));
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["attempted"], 2);
+    assert_eq!(report["valid"], 1);
+    assert_eq!(report["invalid"], 1);
+    assert_eq!(report["all_controls_valid"], false);
+    assert_eq!(report["effect_gate_pass"], false);
+    assert_eq!(report["decision"], "stop_invalid_baseline");
+    assert_eq!(report["probes"][1]["launch"]["code"], 0);
+    assert_eq!(report["probes"][1]["marker_exact"], false);
+    assert_eq!(report["probes"][1]["marker_error"], Value::Null);
+    assert_eq!(
+        serde_json::from_slice::<Value>(
+            &std::fs::read(report_directory.join("report.json")).unwrap()
+        )
+        .unwrap(),
+        report
+    );
+    assert!(!state.exists());
+}
+
+#[test]
+fn ordinary_admission_baseline_records_native_launch_failure_without_claiming_denial() {
+    let directory = tempfile::tempdir().unwrap();
+    let state = directory.path().join("unused-state");
+    let image = directory.path().join("shield.exe");
+    std::fs::copy(env!("CARGO_BIN_EXE_shield"), &image).unwrap();
+    std::fs::copy(
+        env!("CARGO_BIN_EXE_shield-admission-allow"),
+        directory.path().join("shield-admission-allow.exe"),
+    )
+    .unwrap();
+    std::fs::write(
+        directory.path().join("shield-admission-deny.exe"),
+        b"not a PE image",
+    )
+    .unwrap();
+    let report_directory = directory.path().join("failed-launch");
+    let output = command_output(
+        Command::new(image)
+            .arg("--state")
+            .arg(&state)
+            .args(["endpoint", "baseline", "--output"])
+            .arg(&report_directory),
+    );
+    assert!(!output.status.success());
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["attempted"], 2);
+    assert_eq!(report["valid"], 1);
+    assert_eq!(report["invalid"], 1);
+    assert_eq!(report["effect_gate_pass"], false);
+    assert_eq!(report["decision"], "stop_invalid_baseline");
+    let failed = &report["probes"][1];
+    assert_eq!(failed["launch"]["state"], "failed");
+    assert!(failed["launch"]["os_code"].is_number());
+    assert_eq!(failed["marker_exact"], false);
+    assert!(failed["marker_error"].is_string());
+    assert!(!state.exists());
 }
 
 #[test]
@@ -60,18 +210,13 @@ fn publisher_verification_and_pinned_template_refuse_unsigned_images_without_ope
     assert!(verification.stdout.is_empty());
     assert!(!state.exists());
     let output = directory.path().join("must-not-create-profile.json");
-    let template = Command::new(&image)
-        .arg("--state")
-        .arg(&state)
-        .args([
-            "template",
-            "--output",
-            output.to_str().unwrap(),
-            "--publisher-cert-sha256",
-            &publisher,
-        ])
-        .output()
-        .unwrap();
+    let template = command_output(Command::new(&image).arg("--state").arg(&state).args([
+        "template",
+        "--output",
+        output.to_str().unwrap(),
+        "--publisher-cert-sha256",
+        &publisher,
+    ]));
     assert!(!template.status.success());
     assert!(String::from_utf8_lossy(&template.stderr).contains("WinTrust status"));
     assert!(!output.exists());

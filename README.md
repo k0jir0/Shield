@@ -22,7 +22,8 @@ Do not use production credentials or data.**
 
 - **Worker isolation:** an unelevated controller, a narrowly scoped typed-stdio
   worker, verified zero-capability less-privileged AppContainer (LPAC) identities,
-  job resource limits, deadlines, and cancellation.
+  job resource limits, deadlines, cancellation, and coordinated child-process
+  creation to avoid leaking temporary worker pipe handles to other helpers.
 - **Explicit authority:** frozen enrollment profiles, task grants and epochs,
   transactional allowances, protected local state, and no automatic replay of
   uncertain effects.
@@ -58,10 +59,17 @@ strict Clippy, debug/release builds, and native regression checks. Native tests
 run under a fresh standard-user identity on a disposable GitHub-hosted VM,
 with an independent elevation check.
 
-Recorded validation: **82 tests passed in both debug and release**, and both
-builds passed eight scoped native observations bound to their executable
-hashes. These are software checks, not deployment or protection certification.
+Recorded validation: **113 software/checker tests passed in both debug and
+release** before the final test-only edge-case additions. All 24 updated checker
+tests passed in debug before the documentation refresh. Subsequent debug and
+release checker binaries compiled, but Windows Application Control blocked
+execution (error 4551). Strict all-feature Clippy, formatting
+and discovery of all 100 opt-in contracts pass. Earlier debug/release
+binary-bound runs also passed eight scoped native observations each. These are
+software checks, not deployment or protection certification.
 Do not weaken Windows security or execution policy to make a check pass.
+Validation is local, with the final checker reruns blocked as described
+above; these changes have not yet run in a new GitHub Actions run.
 
 ## Current limits
 
@@ -82,6 +90,42 @@ Do not weaken Windows security or execution policy to make a check pass.
 Live execution requires verified native enforcement and scoped canaries; missing
 or unverifiable protection refuses execution. The offline manual fixture tests
 staging, review, and publication only and cannot establish live readiness.
+
+## Record an ordinary-launch baseline
+
+From an unelevated Windows session, after building all three executables:
+
+```powershell
+& .\target\release\shield.exe endpoint baseline --output "$env:TEMP\Shield-baseline-$([guid]::NewGuid())"
+```
+
+This runs the adjacent inert allow/deny controls once each through ordinary
+process creation, checks their exact nonce markers, and retains a local
+`report.json` with executable hashes, launch outcomes, and read-only native
+prerequisites. Existing output directories are refused. Failed controls invalidate
+the baseline; missing native prerequisites remain explicit stop decisions.
+Neither a valid baseline nor an absent marker establishes Shield enforcement.
+See the [technical paper](paper.txt) for the report contract and limits.
+
+## Test-driven feature architecture
+
+The [acceptance catalog](tests/acceptance/catalog.rs) maps the intended scope to
+**100 named contracts**: 82 pilot scenarios across all twelve gates, 8 release
+scenarios, 5 conditional controls, and 5 future-feature scenarios. The
+[evidence checker](tests/acceptance/evidence.rs) enforces frozen plans, explicit
+budgets, valid controls, observer coverage, profile bindings, and prerequisites.
+Its 24 regression tests use synthetic fixtures **only to test the checker**.
+
+```powershell
+cargo test --locked --test acceptance
+cargo test --locked --features acceptance --test acceptance -- --list
+```
+
+Real-observer contract tests require a separately reviewed evidence bundle and
+are intentionally **red without it**, not ignored or counted as protection
+passes. They replay evidence; they do not themselves install policies, call
+providers, authenticate observers, or certify Shield. See the [technical paper](paper.txt)
+for the red/green workflow, bundle schema, scope selections, and limitations.
 
 ## Documentation
 

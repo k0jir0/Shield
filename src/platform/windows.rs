@@ -5,7 +5,9 @@ use std::mem::{size_of, zeroed};
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::Path;
+use std::process::{Child, Command};
 use std::ptr::{null, null_mut};
+use std::sync::{Mutex, MutexGuard};
 
 use serde::Serialize;
 use uuid::Uuid;
@@ -27,6 +29,18 @@ use crate::protocol::{LoopbackConnection, SocketOperation};
 
 fn wide(value: impl AsRef<OsStr>) -> Vec<u16> {
     value.as_ref().encode_wide().chain(Some(0)).collect()
+}
+
+fn process_creation_lock() -> io::Result<MutexGuard<'static, ()>> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock()
+        .map_err(|_| io::Error::other("Shield process-creation coordination is poisoned"))
+}
+
+/// Coordinate ordinary launches with the sandbox's temporary inheritable handles.
+pub fn spawn_command(command: &mut Command) -> io::Result<Child> {
+    let _creation = process_creation_lock()?;
+    command.spawn()
 }
 
 pub(crate) struct SystemLibrary(HMODULE);
@@ -777,6 +791,8 @@ impl SandboxProcess {
     ) -> Result<Self> {
         let container = Container::create(id)?;
         protect_directory(directory, Some(&sid_string(container.sid)?))?;
+        // Rust's private spawn lock cannot cover these native inheritable pipe handles.
+        let _creation = process_creation_lock()?;
         let (child_read, parent_write) = pipe()?;
         let (parent_read, child_write) = pipe()?;
         unsafe {
@@ -1185,5 +1201,95 @@ pub fn probe_loopback(port: u16) -> Result<LoopbackConnection> {
             ));
         }
         Ok(LoopbackConnection::Connected {})
+    }
+}
+
+#[cfg(test)]
+mod inheritance_tests {
+    use super::*;
+    use std::process::Stdio;
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+    use windows_sys::Win32::Storage::FileSystem::WriteFile;
+
+    #[test]
+    fn coordinated_launch_does_not_inherit_an_unrelated_temporary_pipe() {
+        const CHILD_HANDLE: &str = "SHIELD_OWNED_INHERITANCE_PROBE";
+        const MARKER: &[u8] = b"owned-inheritance-marker";
+        if let Ok(value) = std::env::var(CHILD_HANDLE) {
+            let handle = value.parse::<usize>().unwrap() as HANDLE;
+            let mut written = 0;
+            unsafe {
+                WriteFile(
+                    handle,
+                    MARKER.as_ptr(),
+                    MARKER.len() as u32,
+                    &mut written,
+                    null_mut(),
+                );
+            }
+            return;
+        }
+        for coordinated in [false, true] {
+            let guard = process_creation_lock().unwrap();
+            let (read, write) = pipe().unwrap();
+            assert_ne!(
+                unsafe { SetHandleInformation(read.as_raw_handle(), HANDLE_FLAG_INHERIT, 0) },
+                0
+            );
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "platform::windows::inheritance_tests::coordinated_launch_does_not_inherit_an_unrelated_temporary_pipe",
+                ])
+                .env(CHILD_HANDLE, (write.as_raw_handle() as usize).to_string())
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            let (ready_sender, ready) = mpsc::channel();
+            let (done_sender, done) = mpsc::channel();
+            let launcher = thread::spawn(move || {
+                ready_sender.send(()).unwrap();
+                let mut child = if coordinated {
+                    spawn_command(&mut command).unwrap()
+                } else {
+                    // Positive control deliberately bypasses Shield's coordination.
+                    command.spawn().unwrap()
+                };
+                let status = child.wait().unwrap();
+                done_sender.send(status).unwrap();
+            });
+            ready.recv_timeout(Duration::from_secs(5)).unwrap();
+            let early = done.recv_timeout(Duration::from_secs(1));
+            let blocked = matches!(early, Err(mpsc::RecvTimeoutError::Timeout));
+            drop(write);
+            drop(guard);
+            let status = if let Ok(status) = early {
+                status
+            } else {
+                done.recv_timeout(Duration::from_secs(5)).unwrap()
+            };
+            launcher.join().unwrap();
+            assert!(status.success());
+            let observed = crate::util::read_bounded(File::from(read), 64).unwrap();
+            if coordinated {
+                assert!(
+                    observed.is_empty(),
+                    "unrelated pipe authority leaked: {} marker bytes",
+                    observed.len()
+                );
+                assert!(
+                    blocked,
+                    "ordinary launch escaped the process-creation guard"
+                );
+            } else {
+                assert_eq!(
+                    observed, MARKER,
+                    "native inheritance positive control failed"
+                );
+            }
+        }
     }
 }

@@ -496,13 +496,14 @@ mod tests {
             std::io::Error::last_os_error()
         );
         // Never resume the test image: only its termination in the owned job is observed.
-        let mut child = Command::new(std::env::current_exe().unwrap())
-            .creation_flags(CREATE_SUSPENDED | CREATE_NO_WINDOW)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
+        let mut child = platform::spawn_command(
+            Command::new(std::env::current_exe().unwrap())
+                .creation_flags(CREATE_SUSPENDED | CREATE_NO_WINDOW)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null()),
+        )
+        .unwrap();
         if unsafe { AssignProcessToJobObject(job.as_raw_handle(), child.as_raw_handle()) } == 0 {
             let error = std::io::Error::last_os_error();
             child.kill().unwrap();
