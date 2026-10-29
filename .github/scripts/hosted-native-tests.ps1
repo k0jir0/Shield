@@ -60,7 +60,7 @@ try {
     $stdout = Join-Path $work 'stdout.log'
     $stderr = Join-Path $work 'stderr.log'
     $arguments = '-NoLogo -NoProfile -File "{0}" -ReportDirectory "{1}"' -f $script, $report
-    $process = Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Credential $credential -LoadUserProfile -WorkingDirectory $root -ArgumentList $arguments -RedirectStandardOutput $stdout -RedirectStandardError $stderr -Wait -PassThru
+    $process = Start-Process -FilePath (Join-Path $PSHOME 'pwsh.exe') -Credential $credential -LoadUserProfile -WorkingDirectory $root -ArgumentList $arguments -RedirectStandardOutput $stdout -RedirectStandardError $stderr -Wait -PassThru
     Get-Content -LiteralPath $stdout
     Get-Content -LiteralPath $stderr
     if ($process.ExitCode -ne 0) { throw "Non-elevated native checks failed: exit $($process.ExitCode)" }
