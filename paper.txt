@@ -676,6 +676,33 @@ acceptance gate is claimed. Missing R0 decisions, authorized disposable lab
 resources, authentic provider observations and unfinished release features
 still prevent full product completion.
 
+## Hosted CI correction: noninteractive process-creation failures
+
+Hosted run https://github.com/k0jir0/Shield/actions/runs/40949131324 for
+e1b0817aa2499792e30b6c28a25a481a7d569458 completed with failure, not cancellation.
+All 95 library, 4 parsing and 24 checker tests passed; the CLI suite passed 7
+and failed 1. The malformed-PE admission-baseline case reached the harness's
+60-second deadline. Windows may display critical-error dialogs during
+CreateProcess, before Shield has a child handle to wait on. Increasing the
+deadline, skipping the invalid-image case or classifying it as policy denial
+would not fix that process-creation boundary.
+
+Both coordinated ordinary spawning and raw LPAC creation now hold a
+thread-bound error-mode guard that adds SEM_FAILCRITICALERRORS, preserves
+other flags, and restores the prior thread mode on return or unwinding.
+Setup errors are returned; restoration errors are explicitly logged.
+No process-wide mode, native enforcement policy or execution-policy change
+is made, and native launch errors remain available to the caller.
+Two added library regressions check thread isolation, preserved flags,
+unwind restoration and normal/native-failure launch restoration.
+
+The focused local library executable was blocked before execution by existing
+Application Control, error 4551; those two new tests are not local passes.
+The original failing CLI case passed locally, and strict all-target/all-feature
+Clippy passed. Hosted validation must establish whether the scoped change
+resolves the observed runner timeout; no local pass proves its exact cause.
+The catalog's real acceptance gates remain separate from this CI correction.
+
 ## Executable TDD feature and acceptance architecture
 
 The test architecture lives in `tests/acceptance.rs` and its `catalog.rs`,

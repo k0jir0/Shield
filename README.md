@@ -64,7 +64,7 @@ strict Clippy, debug/release builds, and native regression checks. Native tests
 run under a fresh standard-user identity on a disposable GitHub-hosted VM,
 with an independent elevation check.
 
-Latest local validation: **131 software/checker tests passed in debug**, with
+The last completed local full run had **131 software/checker tests pass in debug**, with
 no ignored tests. In release, **12 tests passed; 119 were blocked before
 execution** by existing Windows Application Control (error 4551). That is not
 a release pass. Strict all-feature Clippy and formatting pass. Recent TDD
@@ -72,12 +72,16 @@ increments cover journal budgets, file boundaries, cancellation ownership,
 bounded helper I/O and retained pipe writers; reproduced failures and earlier
 binary-bound results remain in the [technical paper](paper.txt).
 
-The last published hosted run was cancelled at its 45-minute job limit, not
-passed. The updated wrapper adds a shorter owned-process wait and prints logs
-on failure; it is syntax-checked only and needs a fresh hosted run. These local
-software checks are not deployment or protection
-certification. Do not weaken Windows security or execution policy to make a
-check pass.
+A [hosted regression run](https://github.com/k0jir0/Shield/actions/runs/40949131324)
+subsequently exposed a malformed-executable launch exceeding the test deadline.
+Launches now temporarily suppress Windows critical-error dialogs on the calling
+thread and restore its previous error mode; native errors remain explicit.
+Two new regressions check thread isolation, restoration and launch outcomes;
+their local executable was blocked by Application Control, while the original
+failing CLI test and strict Clippy passed locally. The wrapper's shorter wait
+and failure-log output made the hosted failure visible. Check hosted results
+for the exact commit; software checks are not deployment or protection
+certification. Do not weaken security or execution policy to make a check pass.
 
 ## Current limits
 

@@ -17,6 +17,9 @@ use windows_sys::Win32::Security::Authorization::*;
 use windows_sys::Win32::Security::Credentials::*;
 use windows_sys::Win32::Security::Isolation::*;
 use windows_sys::Win32::Security::*;
+use windows_sys::Win32::System::Diagnostics::Debug::{
+    GetThreadErrorMode, SEM_FAILCRITICALERRORS, SetThreadErrorMode,
+};
 use windows_sys::Win32::System::JobObjects::*;
 use windows_sys::Win32::System::LibraryLoader::*;
 use windows_sys::Win32::System::Pipes::{CreatePipe, PeekNamedPipe};
@@ -40,7 +43,41 @@ fn process_creation_lock() -> io::Result<MutexGuard<'static, ()>> {
 /// Coordinate ordinary launches with the sandbox's temporary inheritable handles.
 pub fn spawn_command(command: &mut Command) -> io::Result<Child> {
     let _creation = process_creation_lock()?;
+    let _error_mode = CriticalErrorMode::enter()?;
     command.spawn()
+}
+
+struct CriticalErrorMode {
+    previous: u32,
+    _thread: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+
+impl CriticalErrorMode {
+    fn enter() -> io::Result<Self> {
+        let mut previous = 0;
+        // Loader error dialogs can block CreateProcess before a child wait exists.
+        if unsafe {
+            SetThreadErrorMode(GetThreadErrorMode() | SEM_FAILCRITICALERRORS, &mut previous)
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self {
+            previous,
+            _thread: std::marker::PhantomData,
+        })
+    }
+}
+
+impl Drop for CriticalErrorMode {
+    fn drop(&mut self) {
+        if unsafe { SetThreadErrorMode(self.previous, null_mut()) } == 0 {
+            eprintln!(
+                "Shield thread error-mode restoration failed: {}",
+                io::Error::last_os_error()
+            );
+        }
+    }
 }
 
 /// Read a uniquely owned pipe without allowing an idle writer to outlive the deadline.
@@ -985,6 +1022,7 @@ impl SandboxProcess {
             }
             environment.push(0);
             let mut information: PROCESS_INFORMATION = zeroed();
+            let _error_mode = CriticalErrorMode::enter()?;
             check(
                 CreateProcessW(
                     executable_wide.as_ptr(),
@@ -1290,6 +1328,75 @@ pub fn probe_loopback(port: u16) -> Result<LoopbackConnection> {
             ));
         }
         Ok(LoopbackConnection::Connected {})
+    }
+}
+
+#[cfg(test)]
+mod process_error_mode_tests {
+    use super::*;
+    use std::os::windows::process::CommandExt;
+    use std::process::Stdio;
+    use windows_sys::Win32::System::Diagnostics::Debug::SEM_NOGPFAULTERRORBOX;
+
+    fn baseline() -> CriticalErrorMode {
+        let mut previous = 0;
+        assert_ne!(
+            unsafe { SetThreadErrorMode(SEM_NOGPFAULTERRORBOX, &mut previous) },
+            0
+        );
+        CriticalErrorMode {
+            previous,
+            _thread: std::marker::PhantomData,
+        }
+    }
+
+    #[test]
+    fn critical_error_mode_is_thread_local_preserves_flags_and_restores_on_unwind() {
+        let _baseline = baseline();
+        let other_thread = std::thread::spawn(|| unsafe { GetThreadErrorMode() })
+            .join()
+            .unwrap();
+        let panic = std::panic::catch_unwind(|| {
+            let _mode = CriticalErrorMode::enter().unwrap();
+            assert_eq!(
+                unsafe { GetThreadErrorMode() },
+                SEM_NOGPFAULTERRORBOX | SEM_FAILCRITICALERRORS
+            );
+            assert_eq!(
+                std::thread::spawn(|| unsafe { GetThreadErrorMode() })
+                    .join()
+                    .unwrap(),
+                other_thread
+            );
+            panic!("exercise thread error-mode restoration");
+        });
+        assert_eq!(
+            panic.unwrap_err().downcast_ref::<&str>().copied(),
+            Some("exercise thread error-mode restoration")
+        );
+        assert_eq!(unsafe { GetThreadErrorMode() }, SEM_NOGPFAULTERRORBOX);
+    }
+
+    #[test]
+    fn ordinary_launch_restores_error_mode_on_success_and_native_failure() {
+        let _baseline = baseline();
+        let directory = tempfile::tempdir().unwrap();
+        let error =
+            spawn_command(&mut Command::new(directory.path().join("missing.exe"))).unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(ERROR_FILE_NOT_FOUND as i32));
+        assert_eq!(unsafe { GetThreadErrorMode() }, SEM_NOGPFAULTERRORBOX);
+        let mut child = spawn_command(
+            Command::new(std::env::current_exe().unwrap())
+                .creation_flags(CREATE_SUSPENDED | CREATE_NO_WINDOW)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null()),
+        )
+        .unwrap();
+        let restored = unsafe { GetThreadErrorMode() };
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert_eq!(restored, SEM_NOGPFAULTERRORBOX);
     }
 }
 
