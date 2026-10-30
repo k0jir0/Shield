@@ -64,24 +64,21 @@ strict Clippy, debug/release builds, and native regression checks. Native tests
 run under a fresh standard-user identity on a disposable GitHub-hosted VM,
 with an independent elevation check.
 
-The last completed local full run had **131 software/checker tests pass in debug**, with
-no ignored tests. In release, **12 tests passed; 119 were blocked before
-execution** by existing Windows Application Control (error 4551). That is not
-a release pass. Strict all-feature Clippy and formatting pass. Recent TDD
-increments cover journal budgets, file boundaries, cancellation ownership,
-bounded helper I/O and retained pipe writers; reproduced failures and earlier
-binary-bound results remain in the [technical paper](paper.txt).
+Published software baseline `b8b41d0` has a
+[passing hosted run](https://github.com/k0jir0/Shield/actions/runs/40952767924):
+**133 tests passed in each debug/release configuration**, plus eight scoped
+LPAC observations per binary. Formatting, strict all-feature Clippy and builds
+passed. This includes the fix for Windows critical-error dialogs blocking
+malformed-executable launch checks; native errors remain explicit.
 
-A [hosted regression run](https://github.com/k0jir0/Shield/actions/runs/40949131324)
-subsequently exposed a malformed-executable launch exceeding the test deadline.
-Launches now temporarily suppress Windows critical-error dialogs on the calling
-thread and restore its previous error mode; native errors remain explicit.
-Two new regressions check thread isolation, restoration and launch outcomes;
-their local executable was blocked by Application Control, while the original
-failing CLI test and strict Clippy passed locally. The wrapper's shorter wait
-and failure-log output made the hosted failure visible. Check hosted results
-for the exact commit; software checks are not deployment or protection
-certification. Do not weaken security or execution policy to make a check pass.
+Subsequent local audit, diagnostic and publication-recovery hardening adds
+**15 regressions**. The latest complete all-target runs passed **148 tests in
+debug and 148 in release**, with no failures or ignored tests. Strict
+all-feature Clippy and formatting pass. These are local results; fresh hosted
+confirmation for this revision remains pending. Earlier Application Control-blocked
+attempts remain in the [technical paper](paper.txt); later passes do not erase
+them. Software checks do not certify deployment or protection. Do not weaken
+security or execution policy to make a check pass.
 
 ## Current limits
 
@@ -96,6 +93,8 @@ certification. Do not weaken security or execution policy to make a check pass.
   passed. All twelve protection milestones remain unverified.
 - Publication writes **in place, not crash-atomically**. Local cancellation
   cannot recall disclosed data, remote requests, tokens, or completed effects.
+  Dispatch-journal failures explicitly require reconciliation before a fresh
+  approval; they do not automatically replay a write or restore the original.
 - The journal's **64 MiB limit covers main database pages**. Its 1 MiB retained
   WAL setting is not a hard peak-WAL or total-storage cap.
 - There is no production signed release, authenticated updater, product
@@ -104,6 +103,24 @@ certification. Do not weaken security or execution policy to make a check pass.
 Live execution requires verified native enforcement and scoped canaries; missing
 or unverifiable protection refuses execution. The offline manual fixture tests
 staging, review, and publication only and cannot establish live readiness.
+
+## Audit evidence bounds
+
+`audit` and `audit --export <new-file>` verify and collect each event from the
+same SQLite read snapshot. Export is limited to **1,024 records**, **1 MiB of
+compact event-array JSON**, and **4 MiB of final file or terminal JSON**,
+including pretty formatting and terminal-safe Unicode expansion.
+
+An over-budget export fails explicitly: no silent truncation, partial output,
+overwriting an existing file, audit deletion or authority reset. Longer valid
+chains remain verifiable, but segmented export is not implemented. These are
+engineering byte/record bounds, not a measured total-RAM, retention, privacy or
+independent-observer qualification.
+
+User-facing SQLite/JSON errors withhold raw messages and rejected input,
+retaining SQLite failure codes and JSON category/location where available.
+This does not sanitize arbitrary application messages, debug formatting or
+the typed errors' retained internal source chains.
 
 ## Record an ordinary-launch baseline
 

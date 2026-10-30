@@ -703,6 +703,155 @@ Clippy passed. Hosted validation must establish whether the scoped change
 resolves the observed runner timeout; no local pass proves its exact cause.
 The catalog's real acceptance gates remain separate from this CI correction.
 
+Fresh hosted run https://github.com/k0jir0/Shield/actions/runs/40952767924
+subsequently passed for b8b41d0c809f932f69b8b0b0011e5041128cb1fe:
+133 tests in each debug/release configuration (97 library, 4 parsing,
+24 checker, 8 actual native/CLI), with no failures/ignores, including both
+new thread-error-mode regressions. Formatting, strict all-feature Clippy,
+builds and eight hash-bound scoped LPAC observations per binary passed.
+This resolves that hosted software failure, not native/provider qualification.
+
+## TDD hardening: bounded, snapshot-consistent audit export
+
+The next local increment addresses unbounded audit-result collection and
+serialization. Previously evidence verified one SELECT, then fetched rows
+with a second SELECT: a concurrent writer could change the data between the
+verified view and the exported view. Verification/export now share one
+row visitor over one SQLite SELECT snapshot. Each row is checked against the
+sequence/hash chain before collection; a WAL mutation regression verifies
+that concurrent changes cannot be mixed into that verified snapshot and that
+the subsequently corrupted journal is refused.
+
+Before allocating owned strings or parsed JSON, verification checks borrowed
+SQLite field types and byte lengths: nullable task ID at most 36 bytes, kind
+at most 128, serialized data at most 4096, and each chain hash at most 64.
+The audit writer now applies the same kind bound and retains the data bound.
+Rehashed oversized task/kind/data fixtures are rejected even when the ordinary
+hash-chain equation holds. Local chain integrity remains neither administrator-
+proof nor independent authentication of event truth.
+
+Exports retain at most 1024 records and at most 1 MiB of exact compact
+event-array JSON, including array delimiters and commas. Final pretty file
+JSON is written into a capped 4 MiB serializer buffer; terminal rendering also
+enforces 4 MiB after passive Unicode escaping. Existing envelope/record shapes,
+create-new file semantics and the false integrated-gate flag are preserved.
+Serialization and verification finish before file creation or console output,
+so refusal does not publish a prefix or overwrite an earlier export.
+No rows are dropped, segmented, deleted or reset to fit the budget.
+Verification can still scan a longer valid chain without retaining every row.
+The limits bound encoded output and retained record inputs, not exact peak RSS,
+SQLite internal allocation, total retention or qualified operational recovery.
+
+Eight tests were added: five state regressions, two encoding regressions and
+one actual CLI regression. They cover exact 128/129-byte kinds, rehashed
+oversized metadata, concurrent WAL mutation, 1024/1025 records, an exact
+1 MiB event array and the next event, exact 4 MiB pretty serialization,
+Unicode expansion, unchanged valid export shape, existing-file preservation,
+and file/console over-budget refusal with no partial output. The CLI fixture
+also uses compact valid nested JSON whose pretty representation exceeds
+4 MiB, rather than assuming input length bounds formatted output.
+
+The initial pre-fix test executable was blocked by existing Application
+Control, error 4551; it is not counted as an observed RED. After implementation,
+all eight new tests passed in both debug and release under normal policy.
+The broader debug CLI suite passed eight and failed one because the host
+refused an inert admission canary with error 4551. The release invocation
+passed 104 library and 4 parsing tests, then was blocked before executing
+the zero-test allow-canary harness; the new release audit CLI test passed
+separately. Full local suites are therefore not claimed green. Strict
+all-target/all-feature Clippy and formatting pass. No policy exception,
+hash-only change or relocation workaround was used. At validation time this
+increment was local/uncommitted, without a fresh hosted run or acceptance-gate qualification.
+
+## TDD hardening: non-disclosing SQLite/JSON diagnostics
+
+The next local increment reproduced raw diagnostic disclosure. Three library
+tests and one actual offline CLI test failed before the fix: SQLite trigger
+messages, nested SQL conversion errors and Serde rejected values were included
+in Shield's displayed errors. The CLI's real failed prepare path reproduced
+the trigger-message leak. Fixtures use an explicitly fake capability URL and
+an owned temporary database/profile; no live credential or provider is used.
+Passive terminal escaping alone cannot redact secret-looking content.
+
+Central Error::Journal and Error::Json Display formatting now withholds raw
+upstream messages, SQL input, arbitrary column/path labels, conversion source
+messages and rejected JSON values. SQLite failures retain their fixed error
+category and extended code; conversion/missing-record failures have explicit
+safe descriptions, and other journal failures explicitly withhold raw detail.
+JSON errors retain their fixed category and line/column. Existing typed error
+variants and internal source chains are preserved for programmatic handling.
+The application still fails explicitly; no default state, automatic retry or
+success-shaped fallback is introduced.
+
+The CLI regression checks a real journal-trigger refusal without task-authority
+commit, then an invalid frozen profile whose unknown field contains the fake
+capability URL. Console/file audit paths refuse with empty stdout, no new
+export file and no silent profile repair. Codes/category/location remain
+visible while the fixture URL is absent. Source-chain positive controls
+deliberately prove that original typed errors remain available internally:
+this change does not sanitize Debug formatting, full source-chain logging,
+arbitrary Error::Invalid/Unknown/Io messages or every possible secret.
+Production JSON parse sites either use the shared typed conversion or already
+return fixed protocol errors rather than raw upstream text.
+
+All four new regressions pass after the fix. The latest full release run
+passed all 145 ordinary tests: 107 library, 4 parsing, 24 synthetic checker,
+10 actual native/CLI, with no failures/ignores. The debug all-target command
+passed 107 library, 4 parsing and the empty allow-canary harness, then existing
+Application Control refused the empty deny-canary harness before execution,
+error 4551. Independent normal debug targets then passed all 24 checker and
+10 native/CLI tests, so all 145 ordinary debug tests executed and passed, but
+the all-target command itself is not reported green. No blocked binary was
+relocated, renamed or hash-only rewritten, and no policy was bypassed.
+Strict all-target/all-feature Clippy and formatting pass. At validation time both
+local hardening increments were uncommitted/unpublished; no new hosted run, privacy
+qualification or real protection acceptance is inferred.
+
+## TDD hardening: publication dispatch and post-write recovery
+
+The next local increment investigated the in-place publication limitation.
+The existing exclusive destination handle pins the selected object and
+rejects concurrent replacement. A naive staged-file replacement would
+conflict with that protection; releasing it to rename by pathname would not
+preserve the existing identity/race contract. No such shortcut, filesystem
+transaction claim or crash-atomic publication is introduced.
+
+Two actual fault-injection regressions exposed missing partial-outcome
+reporting: publication and restoration reserved/consumed authority, then
+returned an ordinary journal error when dispatch recording failed before
+the destination-content write. Both paths now return an explicit unknown
+journal/reservation outcome naming the operation, stating that no file write
+was attempted, and requiring reconciliation before a new approval. The
+destination's contents remain unchanged. The reserved approval is not refunded
+or silently reused, and no retry is performed.
+
+The publication regression verifies unchanged original bytes, durable consumed
+approval/reservation, explicit reconciliation to denied, refusal of the old
+approval and success only after a fresh separate approval. The restoration
+regression starts from a real publication whose post-write finalization fails;
+it verifies unchanged approved bytes on failed restoration dispatch, denied
+reserved restoration after reconciliation, persistent unknown publication
+history, and restoration only through a fresh reviewed recovery request.
+
+A third positive control injects failure after actual write/sync/readback but
+before successful journal finalization. It verifies that approved bytes remain,
+the task requires recovery, the old approval cannot replay publication,
+an unreviewed digest cannot restore, and an explicitly reviewed restoration
+recovers the original snapshot without relabeling the earlier unknown effect.
+The terminal task warning still says external effects were not recalled.
+These are owned SQLite trigger faults and real local-file effects, not actual
+power loss, disk failure, crash-atomicity or qualified operational recovery.
+
+The two dispatch tests failed before the reporting fix and pass afterward;
+the post-write control passed both before and after. The latest complete
+all-target suites pass all 148 ordinary tests in both debug and release:
+110 library, 4 parsing, 24 synthetic checker and 10 actual native/CLI, with no
+failures/ignores. Strict all-target/all-feature Clippy and formatting pass.
+These are genuine subsequent code revisions executing normally, not a bypass
+or retroactive pass for earlier Application Control-blocked binaries.
+At validation time all three local hardening increments were uncommitted/unpublished
+and without a fresh hosted run. No protection milestone is made verified.
+
 ## Executable TDD feature and acceptance architecture
 
 The test architecture lives in `tests/acceptance.rs` and its `catalog.rs`,

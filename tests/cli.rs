@@ -90,6 +90,161 @@ fn json(state: &Path, arguments: &[&str]) -> Value {
 }
 
 #[test]
+fn rejected_journal_and_profile_diagnostics_do_not_disclose_fixture_capabilities() {
+    let directory = tempfile::tempdir().unwrap();
+    let state = directory.path().join("state");
+    json(&state, &["init"]);
+    let sentinel = "owned-diagnostic-fixture-https://tenant.example/capability?token=fixture-only";
+    let connection = rusqlite::Connection::open(state.join("journal.db")).unwrap();
+    connection
+        .execute_batch(&format!(
+            "CREATE TRIGGER reject_diagnostic_fixture BEFORE INSERT ON audit BEGIN
+         SELECT RAISE(FAIL,'{sentinel}'); END;"
+        ))
+        .unwrap();
+    let note = directory.path().join("note.txt");
+    let reference = directory.path().join("reference.txt");
+    std::fs::write(&note, "owned note").unwrap();
+    std::fs::write(&reference, "owned offline reference").unwrap();
+    let output = run(
+        &state,
+        &[
+            "prepare",
+            "--note",
+            note.to_str().unwrap(),
+            "--instruction",
+            "owned fixture",
+            "--fixture-reference",
+            reference.to_str().unwrap(),
+        ],
+    );
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let diagnostic = String::from_utf8_lossy(&output.stderr);
+    assert!(diagnostic.contains("state journal failure"));
+    assert!(!diagnostic.contains(sentinel));
+    assert!(!diagnostic.contains("tenant.example"));
+    assert!(diagnostic.contains("ConstraintViolation"));
+    assert!(
+        shield::state::Store::open(&state)
+            .unwrap()
+            .tasks()
+            .unwrap()
+            .is_empty()
+    );
+    connection
+        .execute_batch("DROP TRIGGER reject_diagnostic_fixture")
+        .unwrap();
+    drop(connection);
+
+    let profile = state.join("profile.json");
+    let mut value: Value = serde_json::from_slice(&std::fs::read(&profile).unwrap()).unwrap();
+    value
+        .as_object_mut()
+        .unwrap()
+        .insert(sentinel.into(), Value::Bool(true));
+    let rejected = serde_json::to_vec_pretty(&value).unwrap();
+    std::fs::write(&profile, &rejected).unwrap();
+    let export = directory.path().join("refused-audit.json");
+    for arguments in [
+        vec!["audit"],
+        vec!["audit", "--export", export.to_str().unwrap()],
+    ] {
+        let output = run(&state, &arguments);
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        let diagnostic = String::from_utf8_lossy(&output.stderr);
+        assert!(diagnostic.contains("invalid JSON"));
+        assert!(diagnostic.contains("Data"));
+        assert!(diagnostic.contains("line "));
+        assert!(!diagnostic.contains(sentinel));
+        assert!(!diagnostic.contains("tenant.example"));
+        assert!(!export.exists());
+        assert_eq!(std::fs::read(&profile).unwrap(), rejected);
+    }
+}
+
+#[test]
+fn audit_exports_preserve_shape_and_refuse_over_budget_without_partial_output() {
+    let directory = tempfile::tempdir().unwrap();
+    let state = directory.path().join("state");
+    json(&state, &["init"]);
+    let mut store = shield::state::Store::open(&state).unwrap();
+    store
+        .event(
+            None,
+            "audit_fixture",
+            serde_json::json!({"text": "\u{202e}"}),
+        )
+        .unwrap();
+    let console = success(&state, &["audit"]);
+    assert!(!String::from_utf8_lossy(&console.stdout).contains('\u{202e}'));
+    let value: Value = serde_json::from_slice(&console.stdout).unwrap();
+    assert_eq!(value["integrated_gate_pass"], false);
+    assert_eq!(
+        value["events"].as_array().unwrap().len() as u64,
+        store.verify_audit().unwrap()
+    );
+    let export = directory.path().join("audit.json");
+    success(&state, &["audit", "--export", export.to_str().unwrap()]);
+    let saved = std::fs::read(&export).unwrap();
+    assert_eq!(serde_json::from_slice::<Value>(&saved).unwrap(), value);
+    assert!(
+        !run(&state, &["audit", "--export", export.to_str().unwrap()])
+            .status
+            .success()
+    );
+    assert_eq!(std::fs::read(&export).unwrap(), saved);
+
+    let mut nested = Value::Array(vec![Value::Null; 500]);
+    for _ in 0..100 {
+        nested = Value::Array(vec![nested]);
+    }
+    for _ in 0..40 {
+        store
+            .event(None, "encoded_byte_fixture", nested.clone())
+            .unwrap();
+    }
+    let document = serde_json::json!({
+        "profile_digest": store.profile.digest().unwrap(),
+        "events": store.evidence().unwrap(),
+        "integrated_gate_pass": false,
+    });
+    assert!(
+        serde_json::to_vec_pretty(&document).unwrap().len() > shield::state::AUDIT_EXPORT_BYTES
+    );
+    let refused = directory.path().join("over-budget.json");
+    for arguments in [
+        vec!["audit"],
+        vec!["audit", "--export", refused.to_str().unwrap()],
+    ] {
+        let output = run(&state, &arguments);
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("serialized JSON exceeds"));
+        assert!(!refused.exists());
+    }
+
+    for _ in store.verify_audit().unwrap()..=1024 {
+        store
+            .event(None, "record_fixture", serde_json::json!({}))
+            .unwrap();
+    }
+    for arguments in [
+        vec!["audit"],
+        vec!["audit", "--export", refused.to_str().unwrap()],
+    ] {
+        let output = run(&state, &arguments);
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("audit export exceeds"));
+        assert!(!refused.exists());
+    }
+    assert_eq!(std::fs::read(&export).unwrap(), saved);
+    assert_eq!(store.verify_audit().unwrap(), 1025);
+}
+
+#[test]
 fn cli_deadline_terminates_and_reaps_only_the_owned_suspended_child() {
     use std::os::windows::process::CommandExt;
     use windows_sys::Win32::System::Threading::{CREATE_NO_WINDOW, CREATE_SUSPENDED};

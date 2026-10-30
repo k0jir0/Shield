@@ -1,11 +1,11 @@
-use std::io::{BufRead, Read};
+use std::io::{self, BufRead, Read, Write};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use crate::error::{Result, invalid};
+use crate::error::{Error, Result, invalid};
 
 pub fn now() -> Result<u64> {
     SystemTime::now()
@@ -107,9 +107,24 @@ fn unsafe_display_character(value: char) -> bool {
 
 pub fn terminal_json(value: &impl Serialize) -> Result<String> {
     let json = serde_json::to_string_pretty(value)?;
+    terminal_json_text(&json, usize::MAX)
+}
+
+fn terminal_json_text(json: &str, limit: usize) -> Result<String> {
     let mut output = String::new();
     for character in json.chars() {
-        if !character.is_ascii() && unsafe_display_character(character) {
+        let escaped = !character.is_ascii() && unsafe_display_character(character);
+        let size = if escaped {
+            character.len_utf16() * 6
+        } else {
+            character.len_utf8()
+        };
+        if size > limit.saturating_sub(output.len()) {
+            return Err(Error::Quota(
+                "terminal JSON exceeds its fixed rendered-byte bound".into(),
+            ));
+        }
+        if escaped {
             let mut units = [0_u16; 2];
             for unit in character.encode_utf16(&mut units) {
                 output.push_str(&format!("\\u{unit:04x}"));
@@ -119,6 +134,49 @@ pub fn terminal_json(value: &impl Serialize) -> Result<String> {
         }
     }
     Ok(output)
+}
+
+pub fn json_pretty_bounded(value: &impl Serialize, limit: usize) -> Result<Vec<u8>> {
+    struct BoundedJson {
+        bytes: Vec<u8>,
+        limit: usize,
+    }
+
+    impl Write for BoundedJson {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if bytes.len() > self.limit.saturating_sub(self.bytes.len()) {
+                return Err(io::Error::new(
+                    io::ErrorKind::FileTooLarge,
+                    "serialized JSON exceeds its byte bound",
+                ));
+            }
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let mut writer = BoundedJson {
+        bytes: Vec::with_capacity(limit.min(64 * 1024)),
+        limit,
+    };
+    match serde_json::to_writer_pretty(&mut writer, value) {
+        Ok(()) => Ok(writer.bytes),
+        Err(error) if error.io_error_kind() == Some(io::ErrorKind::FileTooLarge) => Err(
+            Error::Quota("serialized JSON exceeds its fixed byte bound".into()),
+        ),
+        Err(error) => Err(error.into()),
+    }
+}
+
+pub fn terminal_json_bounded(value: &impl Serialize, limit: usize) -> Result<String> {
+    let bytes = json_pretty_bounded(value, limit)?;
+    let json = std::str::from_utf8(&bytes)
+        .map_err(|_| invalid("JSON serializer produced invalid UTF-8"))?;
+    terminal_json_text(json, limit)
 }
 
 pub fn text(bytes: &[u8]) -> Result<&str> {
@@ -132,6 +190,39 @@ pub fn text(bytes: &[u8]) -> Result<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_audit_json_counts_pretty_encoding_and_accepts_only_the_exact_limit() {
+        let value = serde_json::json!({"events": ["line\n\"\\", "data"]});
+        let expected = serde_json::to_vec_pretty(&value).unwrap();
+        assert_eq!(
+            json_pretty_bounded(&value, expected.len()).unwrap(),
+            expected
+        );
+        assert!(json_pretty_bounded(&value, expected.len() - 1).is_err());
+        assert!(json_pretty_bounded(&serde_json::json!({}), 0).is_err());
+        let limit = crate::state::AUDIT_EXPORT_BYTES;
+        let overhead = serde_json::to_vec_pretty(&serde_json::json!({"padding": ""}))
+            .unwrap()
+            .len();
+        let value = serde_json::json!({"padding": "x".repeat(limit - overhead)});
+        assert_eq!(json_pretty_bounded(&value, limit).unwrap().len(), limit);
+        assert!(json_pretty_bounded(&value, limit - 1).is_err());
+    }
+
+    #[test]
+    fn bounded_audit_terminal_counts_passive_unicode_expansion() {
+        let value = serde_json::json!({"text": "\u{202e}\u{e0001}"});
+        let encoded = serde_json::to_vec_pretty(&value).unwrap();
+        let expected = terminal_json(&value).unwrap();
+        assert!(expected.len() > encoded.len());
+        assert_eq!(
+            terminal_json_bounded(&value, expected.len()).unwrap(),
+            expected
+        );
+        assert!(terminal_json_bounded(&value, expected.len() - 1).is_err());
+        assert!(terminal_json_bounded(&value, encoded.len()).is_err());
+    }
 
     #[test]
     fn canonical_sha256_requires_exactly_64_lowercase_hex_digits() {

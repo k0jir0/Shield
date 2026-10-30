@@ -18,6 +18,11 @@ use crate::{platform, util};
 const JOURNAL_PAGE_BYTES: u64 = 4096;
 const JOURNAL_MAX_PAGES: u64 = 16384;
 const JOURNAL_RETAINED_WAL_BYTES: i64 = 1048576;
+const AUDIT_KIND_BYTES: usize = 128;
+const AUDIT_DATA_BYTES: usize = 4096;
+const AUDIT_EXPORT_RECORDS: usize = 1024;
+const AUDIT_EXPORT_COMPACT_BYTES: usize = 1024 * 1024;
+pub const AUDIT_EXPORT_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -125,8 +130,13 @@ fn audit(
     kind: &str,
     data: serde_json::Value,
 ) -> Result<()> {
+    if kind.len() > AUDIT_KIND_BYTES {
+        return Err(invalid(
+            "audit event kind exceeds the fixed metadata-only bound",
+        ));
+    }
     let data = serde_json::to_string(&data)?;
-    if data.len() > 4096 {
+    if data.len() > AUDIT_DATA_BYTES {
         return Err(invalid("audit event exceeds the fixed metadata-only bound"));
     }
     let previous: Option<(u64, String)> = transaction
@@ -1053,7 +1063,9 @@ impl Store {
             json!({"operation": operation, "approval": approval, "artifact_digest": digest}),
         )?;
         transaction.commit()?;
-        self.dispatched(operation)?;
+        self.dispatched(operation).map_err(|error| Error::Unknown(format!(
+            "publication {operation} dispatch could not be durably verified; no file write was attempted; reservation requires reconciliation before any new approval: {error}"
+        )))?;
         let effect = target.commit(&bytes);
         let (outcome, phase, error) = if effect.is_ok() {
             ("succeeded", "published", None)
@@ -1301,7 +1313,9 @@ impl Store {
             }),
         )?;
         transaction.commit()?;
-        self.dispatched(operation)?;
+        self.dispatched(operation).map_err(|error| Error::Unknown(format!(
+            "local restoration {operation} dispatch could not be durably verified; no file write was attempted; reservation requires reconciliation before any new approval: {error}"
+        )))?;
         let effect = target.commit(&original);
         let (outcome, phase, error) = if effect.is_ok() {
             (
@@ -1333,14 +1347,38 @@ impl Store {
     }
 
     pub fn verify_audit(&self) -> Result<u64> {
+        self.visit_audit(|_| Ok(()))
+    }
+
+    fn visit_audit(&self, mut visit: impl FnMut(serde_json::Value) -> Result<()>) -> Result<u64> {
         let mut previous = "0".repeat(64);
-        let mut sequence = 0;
+        let mut sequence = 0_u64;
         let mut statement = self.connection.prepare(
             "SELECT seq,timestamp,task,kind,data,previous_hash,hash FROM audit ORDER BY seq",
         )?;
         let mut rows = statement.query([])?;
         while let Some(row) = rows.next()? {
-            sequence += 1;
+            // Borrow SQLite text before allocating owned strings or parsed JSON.
+            for (index, limit, nullable) in [
+                (2, 36, true),
+                (3, AUDIT_KIND_BYTES, false),
+                (4, AUDIT_DATA_BYTES, false),
+                (5, 64, false),
+                (6, 64, false),
+            ] {
+                match row.get_ref(index)? {
+                    rusqlite::types::ValueRef::Null if nullable => {}
+                    rusqlite::types::ValueRef::Text(bytes) if bytes.len() <= limit => {}
+                    _ => {
+                        return Err(Error::Denied(
+                            "audit metadata exceeds its bound or has an invalid SQLite type".into(),
+                        ));
+                    }
+                }
+            }
+            sequence = sequence
+                .checked_add(1)
+                .ok_or_else(|| Error::Denied("audit sequence overflows".into()))?;
             let actual_sequence: u64 = row.get(0)?;
             let timestamp: u64 = row.get(1)?;
             let task: Option<String> = row.get(2)?;
@@ -1357,26 +1395,35 @@ impl Store {
                     "audit sequence/hash chain is inconsistent".into(),
                 ));
             }
+            let event = json!({
+                "sequence": sequence, "timestamp": timestamp, "task": task, "kind": kind,
+                "data": serde_json::from_str::<serde_json::Value>(&data)?, "hash": hash,
+            });
             previous = hash;
+            visit(event)?;
         }
         Ok(sequence)
     }
 
     pub fn evidence(&self) -> Result<Vec<serde_json::Value>> {
-        self.verify_audit()?;
-        let mut statement = self
-            .connection
-            .prepare("SELECT seq,timestamp,task,kind,data,hash FROM audit ORDER BY seq")?;
-        let mut rows = statement.query([])?;
         let mut result = Vec::new();
-        while let Some(row) = rows.next()? {
-            let data: String = row.get(4)?;
-            result.push(json!({
-                "sequence": row.get::<_, u64>(0)?, "timestamp": row.get::<_, u64>(1)?,
-                "task": row.get::<_, Option<String>>(2)?, "kind": row.get::<_, String>(3)?,
-                "data": serde_json::from_str::<serde_json::Value>(&data)?, "hash": row.get::<_, String>(5)?
-            }));
-        }
+        let mut encoded_bytes = 2;
+        self.visit_audit(|event| {
+            if result.len() >= AUDIT_EXPORT_RECORDS {
+                return Err(Error::Quota(
+                    "audit export exceeds its fixed record bound".into(),
+                ));
+            }
+            let additional = serde_json::to_vec(&event)?.len() + usize::from(!result.is_empty());
+            if additional > AUDIT_EXPORT_COMPACT_BYTES - encoded_bytes {
+                return Err(Error::Quota(
+                    "audit export exceeds its fixed compact-byte bound".into(),
+                ));
+            }
+            encoded_bytes += additional;
+            result.push(event);
+            Ok(())
+        })?;
         Ok(result)
     }
 }
@@ -1425,6 +1472,124 @@ mod tests {
             .prepare(kind, &note, "edit note".into(), b"reference", reference)
             .unwrap();
         (directory, store, id)
+    }
+
+    #[test]
+    fn bounded_audit_kind_refuses_one_byte_over_without_appending() {
+        let (_directory, mut store, _) = setup(TaskKind::ManualLab, 16);
+        store.event(None, &"k".repeat(128), json!({})).unwrap();
+        let before = store.verify_audit().unwrap();
+        assert!(store.event(None, &"k".repeat(129), json!({})).is_err());
+        assert_eq!(store.verify_audit().unwrap(), before);
+    }
+
+    #[test]
+    fn bounded_audit_exports_only_rows_from_the_verified_sqlite_snapshot() {
+        let (_directory, store, _) = setup(TaskKind::ManualLab, 16);
+        let expected = store.evidence().unwrap();
+        let last = store.verify_audit().unwrap();
+        let writer = Store::open(&store.root).unwrap();
+        let mut observed = Vec::new();
+        store
+            .visit_audit(|event| {
+                if observed.is_empty() {
+                    writer.connection.execute(
+                        "UPDATE audit SET kind='concurrent_fixture_change' WHERE seq=?1",
+                        [last],
+                    )?;
+                }
+                observed.push(event);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(observed, expected);
+        assert!(store.verify_audit().is_err());
+        assert!(store.evidence().is_err());
+    }
+
+    #[test]
+    fn bounded_audit_verification_refuses_rehashed_oversized_metadata() {
+        let (_directory, store, _) = setup(TaskKind::ManualLab, 16);
+        let (sequence, timestamp, task, kind, data, previous): (
+            u64, u64, Option<String>, String, String, String,
+        ) = store.connection.query_row(
+            "SELECT seq,timestamp,task,kind,data,previous_hash FROM audit ORDER BY seq DESC LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?)),
+        ).unwrap();
+        for (task, kind, data) in [
+            (task.clone(), "k".repeat(129), data.clone()),
+            (Some("t".repeat(37)), kind.clone(), data),
+            (
+                task,
+                kind,
+                serde_json::to_string(&"x".repeat(4095)).unwrap(),
+            ),
+        ] {
+            let hash = util::json_digest(&json!([sequence, timestamp, task, kind, data, previous]))
+                .unwrap();
+            store
+                .connection
+                .execute(
+                    "UPDATE audit SET task=?1,kind=?2,data=?3,hash=?4 WHERE seq=?5",
+                    params![task, kind, data, hash, sequence],
+                )
+                .unwrap();
+            assert!(store.verify_audit().is_err());
+            assert!(store.evidence().is_err());
+        }
+    }
+
+    #[test]
+    fn bounded_audit_export_refuses_one_record_over_without_truncating_the_chain() {
+        let (_directory, mut store, _) = setup(TaskKind::ManualLab, 16);
+        for _ in store.verify_audit().unwrap()..1024 {
+            store.event(None, "count_fixture", json!({})).unwrap();
+        }
+        assert_eq!(store.evidence().unwrap().len(), 1024);
+        store.event(None, "count_fixture", json!({})).unwrap();
+        assert_eq!(store.verify_audit().unwrap(), 1025);
+        assert!(store.evidence().is_err());
+    }
+
+    #[test]
+    fn bounded_audit_export_accepts_exact_compact_bytes_and_refuses_the_next_event() {
+        let (_directory, mut store, _) = setup(TaskKind::ManualLab, 16);
+        for _ in 0..200 {
+            store
+                .event(None, "byte_fixture", json!({"padding": "x".repeat(4000)}))
+                .unwrap();
+        }
+        let current = serde_json::to_vec(&store.evidence().unwrap())
+            .unwrap()
+            .len();
+        let first = store.verify_audit().unwrap() + 1;
+        let overhead: usize = (first..first + 64)
+            .map(|sequence| {
+                serde_json::to_vec(&json!({
+                    "sequence": sequence, "timestamp": util::now().unwrap(), "task": null,
+                    "kind": "byte_fixture", "data": {"padding": ""}, "hash": "a".repeat(64),
+                }))
+                .unwrap()
+                .len()
+                    + 1
+            })
+            .sum();
+        let mut padding = 1024 * 1024 - current - overhead;
+        for remaining in (1..=64).rev() {
+            let amount = padding / remaining;
+            assert!(amount <= 4000);
+            store
+                .event(None, "byte_fixture", json!({"padding": "x".repeat(amount)}))
+                .unwrap();
+            padding -= amount;
+        }
+        assert_eq!(padding, 0);
+        let evidence = store.evidence().unwrap();
+        assert_eq!(serde_json::to_vec(&evidence).unwrap().len(), 1024 * 1024);
+        assert!(evidence.len() < 1024);
+        store.event(None, "byte_fixture", json!({})).unwrap();
+        assert!(store.evidence().is_err());
     }
 
     #[test]
@@ -1599,6 +1764,194 @@ mod tests {
             .query_row("SELECT calls FROM usage", [], |row| row.get(0))
             .unwrap();
         assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn publication_dispatch_failure_requires_reconciliation_without_writing_or_reusing_approval() {
+        let (_directory, mut store, id) = setup(TaskKind::ManualLab, 16);
+        store.close(id, Some(b"approved proposal"), None).unwrap();
+        let digest = util::digest(b"approved proposal");
+        let approval = store.approve(id, &digest).unwrap();
+        let path = store.task(id).unwrap().spec.original_path;
+        store
+            .connection
+            .execute_batch(
+                "CREATE TRIGGER dispatch_fixture BEFORE UPDATE OF state ON operations
+             WHEN OLD.kind='publication' AND NEW.state='dispatched'
+             BEGIN SELECT RAISE(FAIL,'owned dispatch fixture'); END;",
+            )
+            .unwrap();
+        let error = store.publish(id, approval).unwrap_err();
+        assert!(matches!(error, Error::Unknown(_)));
+        assert!(error.to_string().contains("no file write was attempted"));
+        assert!(error.to_string().contains("reconciliation"));
+        assert_eq!(std::fs::read(&path).unwrap(), b"original note\n");
+        assert_eq!(store.task(id).unwrap().phase, "publishing");
+        let (operation, state): (String, String) = store
+            .connection
+            .query_row(
+                "SELECT id,state FROM operations WHERE task=?1 AND kind='publication'",
+                [id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(state, "reserved");
+        let used: String = store
+            .connection
+            .query_row(
+                "SELECT used_by FROM approvals WHERE id=?1",
+                [approval.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(used, operation);
+        store
+            .connection
+            .execute_batch("DROP TRIGGER dispatch_fixture")
+            .unwrap();
+        store.reconcile(id).unwrap();
+        assert_eq!(store.task(id).unwrap().phase, "closed");
+        let state: String = store
+            .connection
+            .query_row(
+                "SELECT state FROM operations WHERE id=?1",
+                [&operation],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(state, "denied");
+        assert!(store.publish(id, approval).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"original note\n");
+        let fresh = store.approve(id, &digest).unwrap();
+        store.publish(id, fresh).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"approved proposal");
+        store.verify_audit().unwrap();
+    }
+
+    fn publication_finalization_fixture(store: &mut Store, id: Uuid) -> (PathBuf, String) {
+        store.close(id, Some(b"approved proposal"), None).unwrap();
+        let approval = store
+            .approve(id, &util::digest(b"approved proposal"))
+            .unwrap();
+        store
+            .connection
+            .execute_batch(
+                "CREATE TRIGGER finalization_fixture BEFORE UPDATE OF state ON operations
+             WHEN OLD.kind='publication' AND NEW.state='succeeded'
+             BEGIN SELECT RAISE(FAIL,'owned finalization fixture'); END;",
+            )
+            .unwrap();
+        let error = store.publish(id, approval).unwrap_err();
+        assert!(matches!(error, Error::Unknown(_)));
+        assert!(error.to_string().contains("could not be finalized"));
+        let path = store.task(id).unwrap().spec.original_path;
+        assert_eq!(std::fs::read(&path).unwrap(), b"approved proposal");
+        assert_eq!(store.task(id).unwrap().phase, "publishing");
+        let (operation, state): (String, String) = store
+            .connection
+            .query_row(
+                "SELECT id,state FROM operations WHERE task=?1 AND kind='publication'",
+                [id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(state, "dispatched");
+        assert!(store.publish(id, approval).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"approved proposal");
+        store
+            .connection
+            .execute_batch("DROP TRIGGER finalization_fixture")
+            .unwrap();
+        store.reconcile(id).unwrap();
+        assert_eq!(store.task(id).unwrap().phase, "recovery_required");
+        (path, operation)
+    }
+
+    #[test]
+    fn publication_finalization_failure_preserves_effect_until_reviewed_restoration() {
+        let (_directory, mut store, id) = setup(TaskKind::ManualLab, 16);
+        let (path, operation) = publication_finalization_fixture(&mut store, id);
+        assert_eq!(std::fs::read(&path).unwrap(), b"approved proposal");
+        let current = store.restoration_target(id).unwrap();
+        assert!(store.restore(id, &util::digest(b"not reviewed")).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"approved proposal");
+        store.restore(id, &current.sha256).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"original note\n");
+        let state: String = store
+            .connection
+            .query_row(
+                "SELECT state FROM operations WHERE id=?1",
+                [&operation],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(state, "unknown");
+        assert_eq!(store.task(id).unwrap().phase, "closed");
+        assert_eq!(
+            store.task(id).unwrap().error.as_deref(),
+            Some("local_snapshot_restored_external_effects_not_recalled")
+        );
+        store.verify_audit().unwrap();
+    }
+
+    #[test]
+    fn restoration_dispatch_failure_preserves_uncertainty_and_never_replays_reserved_writes() {
+        let (_directory, mut store, id) = setup(TaskKind::ManualLab, 16);
+        let (path, original_operation) = publication_finalization_fixture(&mut store, id);
+        let current = store.restoration_target(id).unwrap();
+        store
+            .connection
+            .execute_batch(
+                "CREATE TRIGGER restoration_dispatch_fixture BEFORE UPDATE OF state ON operations
+             WHEN OLD.kind='restoration' AND NEW.state='dispatched'
+             BEGIN SELECT RAISE(FAIL,'owned restoration dispatch fixture'); END;",
+            )
+            .unwrap();
+        let error = store.restore(id, &current.sha256).unwrap_err();
+        assert!(matches!(error, Error::Unknown(_)));
+        assert!(error.to_string().contains("no file write was attempted"));
+        assert!(error.to_string().contains("reconciliation"));
+        assert_eq!(std::fs::read(&path).unwrap(), b"approved proposal");
+        assert_eq!(store.task(id).unwrap().phase, "publishing");
+        let operation: String = store.connection.query_row(
+            "SELECT id FROM operations WHERE task=?1 AND kind='restoration' AND state='reserved'",
+            [id.to_string()], |row| row.get(0),
+        ).unwrap();
+        store
+            .connection
+            .execute_batch("DROP TRIGGER restoration_dispatch_fixture")
+            .unwrap();
+        store.reconcile(id).unwrap();
+        assert_eq!(store.task(id).unwrap().phase, "recovery_required");
+        let state: String = store
+            .connection
+            .query_row(
+                "SELECT state FROM operations WHERE id=?1",
+                [&operation],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(state, "denied");
+        assert!(
+            store
+                .dispatched(Uuid::parse_str(&operation).unwrap())
+                .is_err()
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"approved proposal");
+        let state: String = store
+            .connection
+            .query_row(
+                "SELECT state FROM operations WHERE id=?1",
+                [&original_operation],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(state, "unknown");
+        store
+            .restore(id, &store.restoration_target(id).unwrap().sha256)
+            .unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"original note\n");
+        store.verify_audit().unwrap();
     }
 
     #[test]

@@ -782,11 +782,17 @@ fn execute() -> Result<()> {
                 Action::Audit { export } => {
                     let value = json!({"profile_digest": store.profile.digest()?, "events": store.evidence()?, "integrated_gate_pass": false});
                     if let Some(path) = export {
-                        files::create_new(&absolute(&path)?, &serde_json::to_vec_pretty(&value)?)?;
+                        let bytes =
+                            util::json_pretty_bounded(&value, shield::state::AUDIT_EXPORT_BYTES)?;
+                        files::create_new(&absolute(&path)?, &bytes)?;
                         println!("Exported verified metadata-only local evidence to a new file.");
                         Ok(())
                     } else {
-                        display(&value)
+                        println!(
+                            "{}",
+                            util::terminal_json_bounded(&value, shield::state::AUDIT_EXPORT_BYTES)?
+                        );
+                        Ok(())
                     }
                 }
                 _ => unreachable!("commands not requiring state are handled above"),
