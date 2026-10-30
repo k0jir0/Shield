@@ -165,6 +165,189 @@ fn rejected_journal_and_profile_diagnostics_do_not_disclose_fixture_capabilities
 }
 
 #[test]
+fn status_reports_observed_capacity_without_claiming_writes_or_protection() {
+    let directory = tempfile::tempdir().unwrap();
+    let state = directory.path().join("state");
+    json(&state, &["init"]);
+    let store = shield::state::Store::open(&state).unwrap();
+    let before = store.verify_audit().unwrap();
+    let connection = rusqlite::Connection::open(state.join("journal.db")).unwrap();
+    let pages: u64 = connection
+        .query_row("PRAGMA page_count", [], |row| row.get(0))
+        .unwrap();
+    let free: u64 = connection
+        .query_row("PRAGMA freelist_count", [], |row| row.get(0))
+        .unwrap();
+    let status = json(&state, &["status"]);
+    let journal = &status["storage"]["journal"];
+    assert_eq!(journal["page_bytes"], 4096);
+    assert_eq!(journal["allocated_pages"], pages);
+    assert_eq!(journal["reusable_pages"], free);
+    assert_eq!(journal["maximum_pages"], 16384);
+    assert_eq!(journal["logical_main_bytes"], pages * 4096);
+    assert_eq!(journal["main_database_limit_bytes"], 64 * 1024 * 1024);
+    assert_eq!(journal["remaining_growth_bytes"], (16384 - pages) * 4096);
+    assert_eq!(journal["retained_journal_limit_bytes"], 1024 * 1024);
+    assert_eq!(journal["total_storage_limit_enforced"], false);
+    assert_eq!(journal["peak_wal_limit_enforced"], false);
+    assert_eq!(journal["writes_guaranteed"], false);
+    assert_eq!(status["storage"]["audit_export"]["record_limit"], 1024);
+    assert_eq!(
+        status["storage"]["audit_export"]["record_limit_exceeded"],
+        false
+    );
+    assert_eq!(
+        status["storage"]["audit_export"]["segments_available"],
+        true
+    );
+    assert_eq!(status["integrated_pilot_ready"], false);
+    assert_eq!(store.verify_audit().unwrap(), before);
+    assert!(store.tasks().unwrap().is_empty());
+    let refused = run(&state, &["status", "--require-ready"]);
+    assert!(!refused.status.success());
+    let refused: Value = serde_json::from_slice(&refused.stdout).unwrap();
+    assert_eq!(refused["storage"], status["storage"]);
+    assert_eq!(store.verify_audit().unwrap(), before);
+}
+
+#[test]
+fn segmented_audit_export_freezes_its_endpoint_and_refuses_invalid_continuation() {
+    let directory = tempfile::tempdir().unwrap();
+    let state = directory.path().join("state");
+    json(&state, &["init"]);
+    let mut store = shield::state::Store::open(&state).unwrap();
+    for _ in store.verify_audit().unwrap()..1025 {
+        store
+            .event(None, "segment_fixture", serde_json::json!({}))
+            .unwrap();
+    }
+    let profile = std::fs::read(state.join("profile.json")).unwrap();
+    let first_path = directory.path().join("first.json");
+    success(
+        &state,
+        &[
+            "audit",
+            "--segment",
+            "--export",
+            first_path.to_str().unwrap(),
+        ],
+    );
+    let first_bytes = std::fs::read(&first_path).unwrap();
+    let first: Value = serde_json::from_slice(&first_bytes).unwrap();
+    assert_eq!(first["events"].as_array().unwrap().len(), 1024);
+    assert_eq!(first["segment"]["version"], 1);
+    assert_eq!(first["segment"]["after_sequence"], 0);
+    assert_eq!(first["segment"]["after_hash"], "0".repeat(64));
+    assert_eq!(first["segment"]["end_sequence"], 1024);
+    assert_eq!(first["segment"]["through_sequence"], 1025);
+    assert_eq!(first["segment"]["complete"], false);
+    assert_eq!(first["integrated_gate_pass"], false);
+    let cursor = first["segment"]["next_cursor"].as_str().unwrap();
+
+    store
+        .event(None, "appended_after_first_segment", serde_json::json!({}))
+        .unwrap();
+    let second_path = directory.path().join("second.json");
+    success(
+        &state,
+        &[
+            "audit",
+            "--segment",
+            "--cursor",
+            cursor,
+            "--export",
+            second_path.to_str().unwrap(),
+        ],
+    );
+    let second: Value = serde_json::from_slice(&std::fs::read(&second_path).unwrap()).unwrap();
+    assert_eq!(second["events"].as_array().unwrap().len(), 1);
+    assert_eq!(second["events"][0]["sequence"], 1025);
+    assert_eq!(second["segment"]["after_sequence"], 1024);
+    assert_eq!(
+        second["segment"]["after_hash"],
+        first["segment"]["end_hash"]
+    );
+    assert_eq!(second["segment"]["end_sequence"], 1025);
+    assert_eq!(second["segment"]["through_sequence"], 1025);
+    assert_eq!(
+        second["segment"]["through_hash"],
+        first["segment"]["through_hash"]
+    );
+    assert_eq!(second["segment"]["complete"], true);
+    assert_eq!(second["segment"]["next_cursor"], Value::Null);
+
+    let refused = directory.path().join("refused.json");
+    let mut altered = cursor.split(':').collect::<Vec<_>>();
+    assert_eq!(altered.len(), 6);
+    let zero_hash = "0".repeat(64);
+    altered[5] = &zero_hash;
+    for cursor in [
+        "owned-private-cursor-fixture-do-not-echo".to_owned(),
+        altered.join(":"),
+    ] {
+        let output = run(
+            &state,
+            &[
+                "audit",
+                "--segment",
+                "--cursor",
+                &cursor,
+                "--export",
+                refused.to_str().unwrap(),
+            ],
+        );
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        let diagnostic = String::from_utf8_lossy(&output.stderr);
+        assert!(diagnostic.contains("audit cursor"));
+        assert!(!diagnostic.contains(&cursor));
+        assert!(!refused.exists());
+    }
+    let overwrite = run(
+        &state,
+        &[
+            "audit",
+            "--segment",
+            "--export",
+            first_path.to_str().unwrap(),
+        ],
+    );
+    assert!(!overwrite.status.success());
+    assert!(overwrite.stdout.is_empty());
+    assert_eq!(std::fs::read(&first_path).unwrap(), first_bytes);
+    assert_eq!(store.verify_audit().unwrap(), 1026);
+    assert_eq!(std::fs::read(state.join("profile.json")).unwrap(), profile);
+    assert!(!run(&state, &["audit"]).status.success());
+    let status = json(&state, &["status"]);
+    assert_eq!(status["audit_chain_events"], 1026);
+    assert_eq!(
+        status["storage"]["audit_export"]["record_limit_exceeded"],
+        true
+    );
+    assert_eq!(
+        status["storage"]["audit_export"]["segments_available"],
+        true
+    );
+    assert_eq!(store.verify_audit().unwrap(), 1026);
+
+    for arguments in [
+        vec!["audit", "--segment"],
+        vec![
+            "audit",
+            "--cursor",
+            cursor,
+            "--export",
+            refused.to_str().unwrap(),
+        ],
+    ] {
+        let output = run(&state, &arguments);
+        assert_eq!(output.status.code(), Some(2));
+        assert!(output.stdout.is_empty());
+        assert!(!refused.exists());
+    }
+}
+
+#[test]
 fn audit_exports_preserve_shape_and_refuse_over_budget_without_partial_output() {
     let directory = tempfile::tempdir().unwrap();
     let state = directory.path().join("state");
@@ -224,6 +407,19 @@ fn audit_exports_preserve_shape_and_refuse_over_budget_without_partial_output() 
         assert!(String::from_utf8_lossy(&output.stderr).contains("serialized JSON exceeds"));
         assert!(!refused.exists());
     }
+    let compact = directory.path().join("compact-segment.json");
+    success(
+        &state,
+        &["audit", "--segment", "--export", compact.to_str().unwrap()],
+    );
+    let compact_bytes = std::fs::read(&compact).unwrap();
+    assert!(compact_bytes.len() <= shield::state::AUDIT_EXPORT_BYTES);
+    let compact: Value = serde_json::from_slice(&compact_bytes).unwrap();
+    assert_eq!(
+        compact["events"],
+        serde_json::json!(store.evidence().unwrap())
+    );
+    assert_eq!(compact["segment"]["complete"], true);
 
     for _ in store.verify_audit().unwrap()..=1024 {
         store

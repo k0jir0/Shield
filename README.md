@@ -115,14 +115,73 @@ including pretty formatting and terminal-safe Unicode expansion.
 
 An over-budget export fails explicitly: no silent truncation, partial output,
 overwriting an existing file, audit deletion or authority reset. Longer valid
-chains remain verifiable, but segmented export is not implemented. These are
+chains remain verifiable. These are
 engineering byte/record bounds, not a measured total-RAM, retention, privacy or
 independent-observer qualification.
+
+For longer chains, explicitly opt into compact, file-only segmented export:
+
+```powershell
+& .\target\release\shield.exe audit --segment --export .\audit-001.json
+$first = Get-Content -LiteralPath .\audit-001.json -Raw | ConvertFrom-Json
+if (-not $first.segment.complete) {
+    & .\target\release\shield.exe audit --segment --cursor $first.segment.next_cursor --export .\audit-002.json
+}
+```
+
+Each segment retains at most **1,024 records** and **1 MiB of compact event-array
+JSON**, with a **4 MiB final compact document cap**. Compact encoding avoids
+pretty-print expansion; ordinary file/terminal exports keep their previous
+format and refusal behavior. Every output path must be new.
+
+The first segment freezes `through_sequence`/`through_hash`. Continuation uses
+the preceding segment's `next_cursor`, and stops at that same terminal anchor
+even if new records have been appended. The segment records its starting and
+ending sequence/hash, limits, and `complete`; completion has `next_cursor: null`.
+Start a new export without a cursor to include later records.
+
+The bounded, canonical `v1` cursor binds the frozen profile and both chain
+anchors. Invalid, foreign-profile, missing or mismatched anchors are refused
+before output creation, without echoing the supplied token. Cursors are
+non-secret read positions, not credentials or publication authority. Each call
+verifies the entire visible chain in one SQLite read snapshot, including any
+appended suffix; memory collection is bounded, but total scan time is not a
+constant-time or hard-deadline guarantee. No audit rows, grants, consumed
+approvals or quota counters are deleted/reset. This is not retention management,
+an independent witness, administrator-proof evidence or a protection-gate pass.
+
+Local validation of segmented export and the capacity diagnostics below passes
+**157 tests in each debug/release configuration**, formatting, strict all-feature
+Clippy and eight scoped LPAC observations per binary. Nine tests were added
+across the two increments; both new CLI contracts were observed failing before
+implementation. This is not fresh hosted confirmation or an upgrade of any
+native/provider acceptance gate.
 
 User-facing SQLite/JSON errors withhold raw messages and rejected input,
 retaining SQLite failure codes and JSON category/location where available.
 This does not sanitize arbitrary application messages, debug formatting or
 the typed errors' retained internal source chains.
+
+## Read-only capacity diagnostics
+
+`status` includes `storage.journal`: observed SQLite page size, allocated/free
+pages, the configured maximum, logical main-database bytes, remaining growth
+bytes and the retained-journal setting. Sampling uses a read transaction and
+refuses inconsistent counters or unexpected connection-local limits; the
+sampler does not repair settings, checkpoint, delete data or reset authority.
+
+`remaining_growth_bytes` is `(maximum_pages - allocated_pages) * page_bytes`.
+Free-list pages are reported separately because existing pages may be reused
+even when growth reaches zero. Neither number guarantees a write will succeed:
+filesystem space, other files, page overhead and concurrent writers still
+matter. This is not a physical disk measurement, total-storage cap, peak-WAL
+limit or reservation; the corresponding guarantee fields are explicitly false.
+
+`storage.audit_export` reports the existing record/byte caps, whether the
+separately verified audit count exceeds the single-export record limit, and
+availability of opt-in segments. A count below the limit does not certify
+byte/rendering limits or export success. These diagnostics do not upgrade any
+readiness gate; `status --require-ready` still refuses unqualified protection.
 
 ## Record an ordinary-launch baseline
 
@@ -166,6 +225,8 @@ operator decisions or the authorized Windows/provider lab.
 
 ## Documentation
 
+- **[Product completion roadmap](plan.txt):** remaining engineering, resources,
+  decisions, acceptance dependencies, release/support work and definition of done.
 - **[Technical paper and complete implementation record](paper.txt):** preserves
   the full detailed README, including architecture, limitations, validation
   evidence, commands, offline fixture walkthrough, publisher verification,

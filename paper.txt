@@ -763,6 +763,87 @@ all-target/all-feature Clippy and formatting pass. No policy exception,
 hash-only change or relocation workaround was used. At validation time this
 increment was local/uncommitted, without a fresh hosted run or acceptance-gate qualification.
 
+## TDD development: bounded, anchored audit segments
+
+A later opt-in `audit --segment --export <new-file> [--cursor <token>]`
+extends, rather than weakens, the bounded export contract above. Ordinary file
+and terminal exports still refuse oversized chains. Segment files use compact
+JSON, the shared 1024-record/1 MiB compact event-array limits and the capped
+4 MiB serializer; nested data does not incur pretty-format expansion.
+
+The first segment fixes a terminal sequence/hash. Each continuation binds
+that endpoint, the previous segment's ending sequence/hash and the exact frozen
+profile. The ASCII v1 cursor is at most 256 bytes with canonical decimal
+sequences and lowercase SHA256 values. It conveys no authority. The full
+visible chain is verified in one SELECT snapshot on every call, including an
+appended suffix, before cursor anchors are accepted or any output is created.
+New appends do not change an existing export's endpoint. Each segment declares
+its anchors, limits, completion and optional next cursor. A fresh export is
+required to include later records.
+
+Shared capacity checking preserves legacy quota errors; in explicit segment
+mode a page boundary yields a continuation rather than silently discarding
+records. The journal and authority state are never compacted, truncated,
+deleted, reset or refunded. Invalid/foreign/missing/mismatched cursors refuse
+without echoing token content. Existing files are not overwritten.
+
+The actual new CLI contract demonstrated RED before implementation: the
+executable rejected the unknown --segment argument. Added tests cover frozen
+endpoints under append, whole-chain corruption before/within/after a page and
+after the frozen endpoint, absent anchors, canonical/bounded/profile-bound
+cursors, completed/empty snapshots and preserved model/publication authority.
+Existing exact-1 MiB and CLI pretty-expansion regressions also exercise the
+new compact segments. These are software/file/SQLite tests, not independent
+event authentication or native/provider acceptance. Full-chain rescans remain
+linear per segment; peak RSS, total storage, retention and recovery need their
+own operational qualification. No native security policy or provider resource
+is changed by this increment.
+
+Final local validation passes all 154 ordinary tests in both configurations:
+115 library, 4 parsing, 24 synthetic checker and 11 actual native/CLI tests.
+Six tests were added, and the previous exact-byte/pretty-expansion tests were
+extended. Formatting and strict all-target/all-feature Clippy pass. Both
+executables also pass eight hash-bound scoped LPAC observations with no cleanup
+diagnostic, still recording Winsock startup failure 10107 rather than proving
+complete network denial. At validation time results were local/uncommitted; no fresh hosted run,
+live provider test, retention qualification or formal acceptance pass is claimed.
+
+## TDD development: truthful journal-capacity status
+
+A subsequent read-only status increment reports actual connection-local SQLite
+page/maximum/retained-journal settings and allocation/free-list counters.
+Sampling holds a read transaction and validates the expected configured
+limits, allocated-page ceiling and free-list range. Inconsistent samples fail
+explicitly; the sampler does not reapply settings or mutate journal authority.
+
+Logical main bytes and remaining growth are exact page-count arithmetic,
+not measured physical disk usage or user-data capacity. Reusable pages remain
+separate: zero possible growth does not imply that every write must fail.
+Positive growth likewise promises neither a successful write nor sufficient
+filesystem space. Total-storage, peak-WAL and guaranteed-write fields remain
+false. No retention, cleanup, checkpoint, quota refund or automatic recovery
+is triggered by the diagnostic.
+
+Status also exposes the existing audit output limits, a precise record-count
+exceeded flag and segment availability. The audit count has its own verified
+snapshot; it is not falsely presented as the same global snapshot as all
+capacity/host/network readings. A below-limit count does not prove that byte
+or formatting limits permit an export. Readiness remains unqualified.
+
+The real CLI test failed before implementation because storage readings were
+absent. New unit tests check exact zero/full growth, reusable pages, invalid
+counters/settings, actual SQLite readings, unchanged journal/authority state
+and no silent repair of a changed connection-local limit. The actual CLI
+checks both status exit modes and record-limit reporting above 1024 records.
+
+Final local validation passes all 157 ordinary tests in both configurations:
+117 library, 4 parsing, 24 synthetic checker and 12 actual native/CLI tests.
+Three tests were added in this increment, bringing the two increments to nine.
+Formatting and strict all-target/all-feature Clippy pass. Both current binaries
+also pass eight hash-bound scoped LPAC observations with no cleanup diagnostic.
+The Winsock 10107 limitation is unchanged. At validation time this was local/uncommitted software
+validation, not a hosted run or formal deployment/provider/acceptance pass.
+
 ## TDD hardening: non-disclosing SQLite/JSON diagnostics
 
 The next local increment reproduced raw diagnostic disclosure. Three library

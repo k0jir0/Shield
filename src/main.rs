@@ -134,6 +134,12 @@ enum Action {
     Audit {
         #[arg(long)]
         export: Option<PathBuf>,
+        /// Export a bounded compact segment, with a fixed terminal chain anchor.
+        #[arg(long, requires = "export")]
+        segment: bool,
+        /// Continue a segment using its non-secret next_cursor token.
+        #[arg(long, requires = "segment")]
+        cursor: Option<String>,
     },
     #[command(name = "__worker", hide = true)]
     Worker,
@@ -736,6 +742,17 @@ fn execute() -> Result<()> {
                 Action::Endpoint { action } => endpoint(&mut store, action),
                 Action::Status { require_ready } => {
                     let audit_events = store.verify_audit()?;
+                    let storage = json!({
+                        "journal": store.journal_capacity()?,
+                        "audit_export": {
+                            "record_limit": shield::state::AUDIT_EXPORT_RECORDS,
+                            "record_limit_exceeded": audit_events > shield::state::AUDIT_EXPORT_RECORDS as u64,
+                            "compact_event_bytes_limit": shield::state::AUDIT_EXPORT_COMPACT_BYTES,
+                            "document_bytes_limit": shield::state::AUDIT_EXPORT_BYTES,
+                            "segments_available": true,
+                        },
+                        "limitation": "read-only SQLite allocation sample, not a reservation or physical disk measurement; audit count has its own verified snapshot",
+                    });
                     let host = match store.profile.verify_host() {
                         Ok(()) => json!({"state": "matches_frozen_profile"}),
                         Err(error) => {
@@ -767,7 +784,7 @@ fn execute() -> Result<()> {
                     display(&json!({
                         "profile_digest": store.profile.digest()?, "host": host, "network": boundary,
                         "audit_chain_events": audit_events, "audit_limit": "local ACL-protected chain, not independent/admin-proof evidence",
-                        "tasks": tasks, "integrated_pilot_ready": false,
+                        "tasks": tasks, "storage": storage, "integrated_pilot_ready": false,
                         "endpoint_admission": admission,
                         "gates": {"R0":"unverified","L0":"unverified","E0":"unverified","A0":"unverified","C0":"unverified","M0":"unverified","E1":"unverified","M1":"unverified","C1":"unverified","I1":"unverified","O1":"unverified","P0":"unverified"},
                         "warning": "Fixture completion, native inventory, configured filters and software tests cannot certify the integrated pilot."
@@ -779,7 +796,26 @@ fn execute() -> Result<()> {
                     }
                     Ok(())
                 }
-                Action::Audit { export } => {
+                Action::Audit {
+                    export,
+                    segment,
+                    cursor,
+                } => {
+                    if segment {
+                        let path = export.ok_or_else(|| {
+                            Error::Invalid(
+                                "segmented audit export requires a new output file".into(),
+                            )
+                        })?;
+                        let value = store.evidence_segment(cursor.as_deref())?;
+                        let bytes =
+                            util::json_compact_bounded(&value, shield::state::AUDIT_EXPORT_BYTES)?;
+                        files::create_new(&absolute(&path)?, &bytes)?;
+                        println!(
+                            "Exported verified metadata-only local audit segment to a new file."
+                        );
+                        return Ok(());
+                    }
                     let value = json!({"profile_digest": store.profile.digest()?, "events": store.evidence()?, "integrated_gate_pass": false});
                     if let Some(path) = export {
                         let bytes =

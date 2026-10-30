@@ -20,9 +20,142 @@ const JOURNAL_MAX_PAGES: u64 = 16384;
 const JOURNAL_RETAINED_WAL_BYTES: i64 = 1048576;
 const AUDIT_KIND_BYTES: usize = 128;
 const AUDIT_DATA_BYTES: usize = 4096;
-const AUDIT_EXPORT_RECORDS: usize = 1024;
-const AUDIT_EXPORT_COMPACT_BYTES: usize = 1024 * 1024;
+pub const AUDIT_EXPORT_RECORDS: usize = 1024;
+pub const AUDIT_EXPORT_COMPACT_BYTES: usize = 1024 * 1024;
 pub const AUDIT_EXPORT_BYTES: usize = 4 * 1024 * 1024;
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct JournalCapacity {
+    pub page_bytes: u64,
+    pub allocated_pages: u64,
+    pub reusable_pages: u64,
+    pub maximum_pages: u64,
+    pub logical_main_bytes: u64,
+    pub main_database_limit_bytes: u64,
+    pub remaining_growth_bytes: u64,
+    pub retained_journal_limit_bytes: u64,
+    pub total_storage_limit_enforced: bool,
+    pub peak_wal_limit_enforced: bool,
+    pub writes_guaranteed: bool,
+}
+
+impl JournalCapacity {
+    fn checked(
+        page_bytes: u64,
+        allocated_pages: u64,
+        reusable_pages: u64,
+        maximum_pages: u64,
+        retained_journal_limit_bytes: u64,
+    ) -> Result<Self> {
+        if page_bytes != JOURNAL_PAGE_BYTES
+            || maximum_pages != JOURNAL_MAX_PAGES
+            || retained_journal_limit_bytes != JOURNAL_RETAINED_WAL_BYTES as u64
+            || allocated_pages > maximum_pages
+            || reusable_pages > allocated_pages
+        {
+            return Err(Error::Denied(
+                "journal capacity sample has inconsistent counters or unexpected configured limits"
+                    .into(),
+            ));
+        }
+        Ok(Self {
+            page_bytes,
+            allocated_pages,
+            reusable_pages,
+            maximum_pages,
+            logical_main_bytes: allocated_pages * page_bytes,
+            main_database_limit_bytes: maximum_pages * page_bytes,
+            remaining_growth_bytes: (maximum_pages - allocated_pages) * page_bytes,
+            retained_journal_limit_bytes,
+            total_storage_limit_enforced: false,
+            peak_wal_limit_enforced: false,
+            writes_guaranteed: false,
+        })
+    }
+}
+
+struct AuditCursor {
+    after_sequence: u64,
+    after_hash: String,
+    through_sequence: u64,
+    through_hash: String,
+}
+
+impl AuditCursor {
+    fn parse(value: &str, profile_digest: &str) -> Result<Self> {
+        if value.len() > 256 || !value.is_ascii() {
+            return Err(invalid("audit cursor exceeds its supported encoding bound"));
+        }
+        let fields: Vec<_> = value.split(':').collect();
+        if fields.len() != 6
+            || fields[0] != "v1"
+            || ![fields[1], fields[3], fields[5]]
+                .iter()
+                .all(|value| util::is_sha256(value))
+        {
+            return Err(invalid(
+                "audit cursor has an unsupported version or encoding",
+            ));
+        }
+        if fields[1] != profile_digest {
+            return Err(Error::Denied(
+                "audit cursor does not bind this frozen profile".into(),
+            ));
+        }
+        let sequence = |value: &str| -> Result<u64> {
+            let parsed = value
+                .parse::<u64>()
+                .map_err(|_| invalid("audit cursor sequence is invalid"))?;
+            if parsed.to_string() != value {
+                return Err(invalid("audit cursor sequence is not canonical"));
+            }
+            Ok(parsed)
+        };
+        let result = Self {
+            after_sequence: sequence(fields[2])?,
+            after_hash: fields[3].into(),
+            through_sequence: sequence(fields[4])?,
+            through_hash: fields[5].into(),
+        };
+        if result.after_sequence > result.through_sequence
+            || (result.after_sequence == 0 && result.after_hash != "0".repeat(64))
+            || (result.through_sequence == 0 && result.through_hash != "0".repeat(64))
+            || (result.after_sequence == result.through_sequence
+                && result.after_hash != result.through_hash)
+        {
+            return Err(invalid("audit cursor anchors are inconsistent"));
+        }
+        Ok(result)
+    }
+
+    fn encode(&self, profile_digest: &str) -> String {
+        format!(
+            "v1:{profile_digest}:{}:{}:{}:{}",
+            self.after_sequence, self.after_hash, self.through_sequence, self.through_hash
+        )
+    }
+}
+
+fn push_audit_event(
+    events: &mut Vec<serde_json::Value>,
+    encoded_bytes: &mut usize,
+    event: serde_json::Value,
+) -> Result<()> {
+    if events.len() >= AUDIT_EXPORT_RECORDS {
+        return Err(Error::Quota(
+            "audit export exceeds its fixed record bound".into(),
+        ));
+    }
+    let additional = serde_json::to_vec(&event)?.len() + usize::from(!events.is_empty());
+    if additional > AUDIT_EXPORT_COMPACT_BYTES - *encoded_bytes {
+        return Err(Error::Quota(
+            "audit export exceeds its fixed compact-byte bound".into(),
+        ));
+    }
+    *encoded_bytes += additional;
+    events.push(event);
+    Ok(())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -344,6 +477,26 @@ impl Store {
 
     pub fn task_directory(&self, id: Uuid) -> PathBuf {
         self.root.join("tasks").join(id.to_string())
+    }
+
+    pub fn journal_capacity(&self) -> Result<JournalCapacity> {
+        let transaction = self.connection.unchecked_transaction()?;
+        let page_bytes = transaction.query_row("PRAGMA page_size", [], |row| row.get(0))?;
+        let allocated_pages = transaction.query_row("PRAGMA page_count", [], |row| row.get(0))?;
+        let reusable_pages =
+            transaction.query_row("PRAGMA freelist_count", [], |row| row.get(0))?;
+        let maximum_pages = transaction.query_row("PRAGMA max_page_count", [], |row| row.get(0))?;
+        let retained_journal_limit_bytes =
+            transaction.query_row("PRAGMA journal_size_limit", [], |row| row.get(0))?;
+        let result = JournalCapacity::checked(
+            page_bytes,
+            allocated_pages,
+            reusable_pages,
+            maximum_pages,
+            retained_journal_limit_bytes,
+        )?;
+        transaction.commit()?;
+        Ok(result)
     }
 
     pub fn worker_path(&self) -> PathBuf {
@@ -1347,10 +1500,13 @@ impl Store {
     }
 
     pub fn verify_audit(&self) -> Result<u64> {
-        self.visit_audit(|_| Ok(()))
+        self.visit_audit(|_, _, _| Ok(()))
     }
 
-    fn visit_audit(&self, mut visit: impl FnMut(serde_json::Value) -> Result<()>) -> Result<u64> {
+    fn visit_audit(
+        &self,
+        mut visit: impl FnMut(u64, &str, serde_json::Value) -> Result<()>,
+    ) -> Result<u64> {
         let mut previous = "0".repeat(64);
         let mut sequence = 0_u64;
         let mut statement = self.connection.prepare(
@@ -1400,7 +1556,7 @@ impl Store {
                 "data": serde_json::from_str::<serde_json::Value>(&data)?, "hash": hash,
             });
             previous = hash;
-            visit(event)?;
+            visit(sequence, &previous, event)?;
         }
         Ok(sequence)
     }
@@ -1408,23 +1564,100 @@ impl Store {
     pub fn evidence(&self) -> Result<Vec<serde_json::Value>> {
         let mut result = Vec::new();
         let mut encoded_bytes = 2;
-        self.visit_audit(|event| {
-            if result.len() >= AUDIT_EXPORT_RECORDS {
-                return Err(Error::Quota(
-                    "audit export exceeds its fixed record bound".into(),
-                ));
+        self.visit_audit(|_, _, event| push_audit_event(&mut result, &mut encoded_bytes, event))?;
+        Ok(result)
+    }
+
+    pub fn evidence_segment(&self, cursor: Option<&str>) -> Result<serde_json::Value> {
+        let profile_digest = self.profile.digest()?;
+        let cursor = cursor
+            .map(|value| AuditCursor::parse(value, &profile_digest))
+            .transpose()?;
+        let after_sequence = cursor.as_ref().map_or(0, |value| value.after_sequence);
+        let after_hash = cursor
+            .as_ref()
+            .map_or_else(|| "0".repeat(64), |value| value.after_hash.clone());
+        let mut after_seen = after_sequence == 0;
+        let mut through_seen = cursor
+            .as_ref()
+            .is_none_or(|value| value.through_sequence == 0);
+        let mut head_sequence = 0;
+        let mut head_hash = "0".repeat(64);
+        let mut end_sequence = after_sequence;
+        let mut end_hash = after_hash.clone();
+        let mut events = Vec::new();
+        let mut encoded_bytes = 2;
+        let mut full = false;
+        self.visit_audit(|sequence, hash, event| {
+            head_sequence = sequence;
+            head_hash = hash.into();
+            if sequence == after_sequence {
+                if hash != after_hash {
+                    return Err(Error::Denied(
+                        "audit cursor continuation hash no longer matches the journal".into(),
+                    ));
+                }
+                after_seen = true;
             }
-            let additional = serde_json::to_vec(&event)?.len() + usize::from(!result.is_empty());
-            if additional > AUDIT_EXPORT_COMPACT_BYTES - encoded_bytes {
-                return Err(Error::Quota(
-                    "audit export exceeds its fixed compact-byte bound".into(),
-                ));
+            if let Some(cursor) = &cursor
+                && sequence == cursor.through_sequence
+            {
+                if hash != cursor.through_hash {
+                    return Err(Error::Denied(
+                        "audit cursor terminal hash no longer matches the journal".into(),
+                    ));
+                }
+                through_seen = true;
             }
-            encoded_bytes += additional;
-            result.push(event);
+            if sequence > after_sequence
+                && cursor
+                    .as_ref()
+                    .is_none_or(|value| sequence <= value.through_sequence)
+                && !full
+            {
+                match push_audit_event(&mut events, &mut encoded_bytes, event) {
+                    Ok(()) => {
+                        end_sequence = sequence;
+                        end_hash = hash.into();
+                    }
+                    Err(Error::Quota(_)) => full = true,
+                    Err(error) => return Err(error),
+                }
+            }
             Ok(())
         })?;
-        Ok(result)
+        if !after_seen || !through_seen {
+            return Err(Error::Denied(
+                "audit cursor anchors are absent from this journal".into(),
+            ));
+        }
+        let through_sequence = cursor
+            .as_ref()
+            .map_or(head_sequence, |value| value.through_sequence);
+        let through_hash = cursor
+            .as_ref()
+            .map_or(head_hash, |value| value.through_hash.clone());
+        let complete = end_sequence == through_sequence;
+        let next_cursor = (!complete).then(|| {
+            AuditCursor {
+                after_sequence: end_sequence,
+                after_hash: end_hash.clone(),
+                through_sequence,
+                through_hash: through_hash.clone(),
+            }
+            .encode(&profile_digest)
+        });
+        Ok(json!({
+            "profile_digest": profile_digest, "events": events, "integrated_gate_pass": false,
+            "segment": {
+                "version": 1, "after_sequence": after_sequence, "after_hash": after_hash,
+                "end_sequence": end_sequence, "end_hash": end_hash,
+                "through_sequence": through_sequence, "through_hash": through_hash,
+                "complete": complete, "next_cursor": next_cursor,
+                "record_limit": AUDIT_EXPORT_RECORDS,
+                "compact_event_bytes_limit": AUDIT_EXPORT_COMPACT_BYTES,
+            },
+        }))
     }
 }
 
@@ -1484,6 +1717,253 @@ mod tests {
     }
 
     #[test]
+    fn journal_capacity_reports_exact_zero_and_full_growth_without_promising_writes() {
+        let sample =
+            |pages, free| JournalCapacity::checked(4096, pages, free, 16384, 1048576).unwrap();
+        let empty = sample(0, 0);
+        assert_eq!(empty.logical_main_bytes, 0);
+        assert_eq!(empty.main_database_limit_bytes, 64 * 1024 * 1024);
+        assert_eq!(empty.remaining_growth_bytes, 64 * 1024 * 1024);
+        let full = sample(16384, 3000);
+        assert_eq!(full.logical_main_bytes, 64 * 1024 * 1024);
+        assert_eq!(full.remaining_growth_bytes, 0);
+        assert_eq!(full.reusable_pages, 3000);
+        assert!(!full.total_storage_limit_enforced);
+        assert!(!full.peak_wal_limit_enforced);
+        assert!(!full.writes_guaranteed);
+        for values in [
+            (8192, 1, 0, 16384, 1048576),
+            (4096, 1, 0, 16385, 1048576),
+            (4096, 16385, 0, 16384, 1048576),
+            (4096, 1, 2, 16384, 1048576),
+            (4096, 1, 0, 16384, 1048577),
+            (4096, u64::MAX, 0, 16384, 1048576),
+        ] {
+            assert!(
+                JournalCapacity::checked(values.0, values.1, values.2, values.3, values.4).is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn journal_capacity_reads_actual_sqlite_without_repairing_limits_or_mutating_authority() {
+        let (_directory, store, id) = setup(TaskKind::ManualLab, 16);
+        let before = store.evidence().unwrap();
+        let total_changes = || -> u64 {
+            store
+                .connection
+                .query_row("SELECT total_changes()", [], |row| row.get(0))
+                .unwrap()
+        };
+        let changes = total_changes();
+        for _ in 0..3 {
+            let capacity = store.journal_capacity().unwrap();
+            let pages: u64 = store
+                .connection
+                .query_row("PRAGMA page_count", [], |row| row.get(0))
+                .unwrap();
+            let free: u64 = store
+                .connection
+                .query_row("PRAGMA freelist_count", [], |row| row.get(0))
+                .unwrap();
+            assert!(pages > 0);
+            assert_eq!(capacity.allocated_pages, pages);
+            assert_eq!(capacity.reusable_pages, free);
+            assert_eq!(capacity.logical_main_bytes, pages * 4096);
+            assert_eq!(total_changes(), changes);
+            assert!(store.connection.is_autocommit());
+        }
+        assert_eq!(store.evidence().unwrap(), before);
+        assert_eq!(store.task(id).unwrap().phase, "prepared");
+        store
+            .connection
+            .pragma_update(None, "journal_size_limit", JOURNAL_RETAINED_WAL_BYTES + 1)
+            .unwrap();
+        assert!(store.journal_capacity().is_err());
+        assert!(store.connection.is_autocommit());
+        let actual: i64 = store
+            .connection
+            .query_row("PRAGMA journal_size_limit", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(actual, JOURNAL_RETAINED_WAL_BYTES + 1);
+        assert_eq!(total_changes(), changes);
+        assert_eq!(store.evidence().unwrap(), before);
+    }
+
+    #[test]
+    fn segmented_audit_cursor_refuses_noncanonical_unbound_and_unreachable_anchors() {
+        let (_directory, store, _) = setup(TaskKind::ManualLab, 16);
+        let digest = store.profile.digest().unwrap();
+        let events = store.evidence().unwrap();
+        let last = events.last().unwrap();
+        let sequence = last["sequence"].as_u64().unwrap();
+        let hash = last["hash"].as_str().unwrap();
+        let token = |after: &str, previous: &str, through: &str, terminal: &str| {
+            format!("v1:{digest}:{after}:{previous}:{through}:{terminal}")
+        };
+        let zero = "0".repeat(64);
+        let valid = token("0", &zero, &sequence.to_string(), hash);
+        let invalid = [
+            String::new(),
+            "x".repeat(257),
+            format!("{valid}\u{202e}"),
+            valid.replacen("v1:", "v2:", 1),
+            valid.replacen(&digest, &util::digest(b"foreign profile"), 1),
+            token("+0", &zero, &sequence.to_string(), hash),
+            token("00", &zero, &sequence.to_string(), hash),
+            token("18446744073709551616", &zero, &sequence.to_string(), hash),
+            token("0", &"A".repeat(64), &sequence.to_string(), hash),
+            token("0", &"1".repeat(64), &sequence.to_string(), hash),
+            token("0", &zero, &sequence.to_string(), &"a".repeat(64)),
+            token("1", &"a".repeat(64), &sequence.to_string(), hash),
+            token(
+                &(sequence + 1).to_string(),
+                hash,
+                &sequence.to_string(),
+                hash,
+            ),
+            token(
+                &(sequence + 1).to_string(),
+                hash,
+                &(sequence + 2).to_string(),
+                hash,
+            ),
+        ];
+        for value in invalid {
+            let error = store.evidence_segment(Some(&value)).unwrap_err();
+            assert!(error.to_string().contains("audit cursor"));
+            assert!(!error.to_string().contains(&value) || value.is_empty());
+        }
+        assert_eq!(
+            store.evidence_segment(Some(&valid)).unwrap()["events"],
+            json!(events)
+        );
+    }
+
+    #[test]
+    fn segmented_audit_checks_the_entire_chain_and_requires_both_cursor_anchors() {
+        let (_directory, mut store, _) = setup(TaskKind::ManualLab, 16);
+        let count = store.verify_audit().unwrap();
+        let transaction = store.connection.transaction().unwrap();
+        for _ in count..1025 {
+            audit(&transaction, None, "segment_fixture", json!({})).unwrap();
+        }
+        transaction.commit().unwrap();
+        let first = store.evidence_segment(None).unwrap();
+        assert_eq!(first["events"].as_array().unwrap().len(), 1024);
+        let cursor = first["segment"]["next_cursor"].as_str().unwrap();
+        store.event(None, "later_append", json!({})).unwrap();
+        for sequence in [1, 1024, 1025, 1026] {
+            let original: String = store
+                .connection
+                .query_row("SELECT kind FROM audit WHERE seq=?1", [sequence], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            store
+                .connection
+                .execute("UPDATE audit SET kind='tampered' WHERE seq=?1", [sequence])
+                .unwrap();
+            assert!(store.evidence_segment(Some(cursor)).is_err());
+            store
+                .connection
+                .execute(
+                    "UPDATE audit SET kind=?1 WHERE seq=?2",
+                    params![original, sequence],
+                )
+                .unwrap();
+        }
+        for sequence in [1025, 1024] {
+            store
+                .connection
+                .execute("DELETE FROM audit WHERE seq>=?1", [sequence])
+                .unwrap();
+            assert_eq!(store.verify_audit().unwrap(), sequence - 1);
+            assert!(
+                store
+                    .evidence_segment(Some(cursor))
+                    .unwrap_err()
+                    .to_string()
+                    .contains("audit cursor anchors are absent")
+            );
+        }
+    }
+
+    #[test]
+    fn segmented_audit_handles_complete_and_empty_snapshots_without_resetting_state() {
+        let (_directory, store, id) = setup(TaskKind::ManualLab, 16);
+        let expected = store.evidence().unwrap();
+        let segment = store.evidence_segment(None).unwrap();
+        assert_eq!(segment["events"], json!(expected));
+        assert_eq!(segment["segment"]["complete"], true);
+        assert_eq!(segment["segment"]["next_cursor"], serde_json::Value::Null);
+        let last = expected.last().unwrap();
+        let terminal = AuditCursor {
+            after_sequence: last["sequence"].as_u64().unwrap(),
+            after_hash: last["hash"].as_str().unwrap().into(),
+            through_sequence: last["sequence"].as_u64().unwrap(),
+            through_hash: last["hash"].as_str().unwrap().into(),
+        }
+        .encode(&store.profile.digest().unwrap());
+        let completed = store.evidence_segment(Some(&terminal)).unwrap();
+        assert_eq!(completed["events"], json!([]));
+        assert_eq!(completed["segment"]["complete"], true);
+        assert_eq!(
+            completed["segment"]["end_hash"],
+            completed["segment"]["through_hash"]
+        );
+        store.connection.execute("DELETE FROM audit", []).unwrap();
+        let empty = store.evidence_segment(None).unwrap();
+        assert_eq!(empty["events"], json!([]));
+        assert_eq!(empty["segment"]["end_sequence"], 0);
+        assert_eq!(empty["segment"]["through_sequence"], 0);
+        assert_eq!(empty["segment"]["through_hash"], "0".repeat(64));
+        assert_eq!(empty["segment"]["complete"], true);
+        assert_eq!(store.task(id).unwrap().phase, "prepared");
+        assert_eq!(store.verify_audit().unwrap(), 0);
+        assert!(store.evidence_segment(Some(&terminal)).is_err());
+    }
+
+    #[test]
+    fn segmented_audit_never_refunds_allowances_or_replays_publication_authority() {
+        let (_directory, mut store, id) = setup(TaskKind::Live, 1);
+        let grant = store.begin(id).unwrap();
+        let digest = util::digest(b"parameters");
+        store
+            .reserve_model(id, grant.epoch, "request", &digest)
+            .unwrap();
+        let count = store.verify_audit().unwrap();
+        store.evidence_segment(None).unwrap();
+        assert_eq!(store.verify_audit().unwrap(), count);
+        assert_eq!(store.task(id).unwrap().model_calls, 1);
+        assert!(
+            store
+                .reserve_model(id, grant.epoch, "different-request", &digest)
+                .is_err()
+        );
+        store.revoke(id).unwrap();
+        store.evidence_segment(None).unwrap();
+        assert!(store.authorize(id, grant.epoch).is_err());
+
+        let (_directory, mut store, id) = setup(TaskKind::ManualLab, 16);
+        store
+            .close(id, Some(b"approved publication"), None)
+            .unwrap();
+        let approval = store
+            .approve(id, &util::digest(b"approved publication"))
+            .unwrap();
+        store.publish(id, approval).unwrap();
+        let before = store.evidence_segment(None).unwrap();
+        assert_eq!(store.evidence_segment(None).unwrap(), before);
+        assert!(store.publish(id, approval).is_err());
+        assert_eq!(store.task(id).unwrap().phase, "published");
+        assert_eq!(
+            std::fs::read(store.task(id).unwrap().spec.original_path).unwrap(),
+            b"approved publication"
+        );
+    }
+
+    #[test]
     fn bounded_audit_exports_only_rows_from_the_verified_sqlite_snapshot() {
         let (_directory, store, _) = setup(TaskKind::ManualLab, 16);
         let expected = store.evidence().unwrap();
@@ -1491,7 +1971,7 @@ mod tests {
         let writer = Store::open(&store.root).unwrap();
         let mut observed = Vec::new();
         store
-            .visit_audit(|event| {
+            .visit_audit(|_, _, event| {
                 if observed.is_empty() {
                     writer.connection.execute(
                         "UPDATE audit SET kind='concurrent_fixture_change' WHERE seq=?1",
@@ -1590,6 +2070,18 @@ mod tests {
         assert!(evidence.len() < 1024);
         store.event(None, "byte_fixture", json!({})).unwrap();
         assert!(store.evidence().is_err());
+        let first = store.evidence_segment(None).unwrap();
+        assert_eq!(first["events"], json!(evidence));
+        assert_eq!(
+            serde_json::to_vec(&first["events"]).unwrap().len(),
+            AUDIT_EXPORT_COMPACT_BYTES
+        );
+        assert_eq!(first["segment"]["complete"], false);
+        let next = store
+            .evidence_segment(first["segment"]["next_cursor"].as_str())
+            .unwrap();
+        assert_eq!(next["events"].as_array().unwrap().len(), 1);
+        assert_eq!(next["segment"]["complete"], true);
     }
 
     #[test]

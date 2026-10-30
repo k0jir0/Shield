@@ -137,6 +137,14 @@ fn terminal_json_text(json: &str, limit: usize) -> Result<String> {
 }
 
 pub fn json_pretty_bounded(value: &impl Serialize, limit: usize) -> Result<Vec<u8>> {
+    json_bounded(value, limit, true)
+}
+
+pub fn json_compact_bounded(value: &impl Serialize, limit: usize) -> Result<Vec<u8>> {
+    json_bounded(value, limit, false)
+}
+
+fn json_bounded(value: &impl Serialize, limit: usize, pretty: bool) -> Result<Vec<u8>> {
     struct BoundedJson {
         bytes: Vec<u8>,
         limit: usize,
@@ -163,7 +171,12 @@ pub fn json_pretty_bounded(value: &impl Serialize, limit: usize) -> Result<Vec<u
         bytes: Vec::with_capacity(limit.min(64 * 1024)),
         limit,
     };
-    match serde_json::to_writer_pretty(&mut writer, value) {
+    let result = if pretty {
+        serde_json::to_writer_pretty(&mut writer, value)
+    } else {
+        serde_json::to_writer(&mut writer, value)
+    };
+    match result {
         Ok(()) => Ok(writer.bytes),
         Err(error) if error.io_error_kind() == Some(io::ErrorKind::FileTooLarge) => Err(
             Error::Quota("serialized JSON exceeds its fixed byte bound".into()),
@@ -208,6 +221,25 @@ mod tests {
         let value = serde_json::json!({"padding": "x".repeat(limit - overhead)});
         assert_eq!(json_pretty_bounded(&value, limit).unwrap().len(), limit);
         assert!(json_pretty_bounded(&value, limit - 1).is_err());
+    }
+
+    #[test]
+    fn bounded_compact_audit_json_preserves_encoding_and_exact_byte_limits() {
+        let value = serde_json::json!({"events": ["line\n\"\\", "\u{202e}"]});
+        let expected = serde_json::to_vec(&value).unwrap();
+        assert_eq!(
+            json_compact_bounded(&value, expected.len()).unwrap(),
+            expected
+        );
+        assert!(json_compact_bounded(&value, expected.len() - 1).is_err());
+        assert!(json_compact_bounded(&value, 0).is_err());
+        let limit = crate::state::AUDIT_EXPORT_BYTES;
+        let overhead = serde_json::to_vec(&serde_json::json!({"padding": ""}))
+            .unwrap()
+            .len();
+        let value = serde_json::json!({"padding": "x".repeat(limit - overhead)});
+        assert_eq!(json_compact_bounded(&value, limit).unwrap().len(), limit);
+        assert!(json_compact_bounded(&value, limit - 1).is_err());
     }
 
     #[test]

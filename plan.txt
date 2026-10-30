@@ -1,0 +1,804 @@
+SHIELD PRODUCT COMPLETION PLAN
+==============================
+Prepared: 2026-10-30
+Status: development roadmap; NOT deployment authorization or acceptance evidence.
+
+Purpose
+-------
+Finish a supportable Windows-first product combining ordinary application
+admission, a restricted AI workflow, provider-native resource/action limits,
+trusted approval/publication, recovery and authenticated distribution.
+
+This plan does not redefine Shield as an offline file editor just because that
+part currently works. It also does not promise universal intrusion prevention,
+containment of arbitrary agents, account-wide protection or cross-platform
+equivalence. Supported claims must name their actual boundaries.
+
+Read this alongside:
+  start.txt                     Governing scope and protection requirements.
+  paper.txt                     Implementation history, evidence and limitations.
+  README.md                     Current implemented surfaces and usage.
+  tests\acceptance\catalog.rs    Named acceptance contracts and dependencies.
+  tests\acceptance\evidence.rs   Evidence schema, validation and replay rules.
+  reports\functional-qa-2026-10-30.txt
+                                Published offline functional QA baseline.
+
+This text roadmap is not the reviewed plan.json required by the acceptance
+harness. Writing either file does not create operator consent or real results.
+If this roadmap conflicts with a governing requirement, resolve the conflict
+through a recorded scope review; do not silently weaken the requirement.
+
+
+1. WHAT "COMPLETE" WILL MEAN
+==========================
+
+There are four different milestones:
+
+1. Software baseline:
+   Buildable, tested implementation of local mechanisms and error paths.
+   Shield has this for substantial prototype functionality.
+
+2. Accepted integrated pilot:
+   A selected legitimate Windows/model/provider workflow works under the final
+   enforced configuration; all required pilot contracts have authentic evidence.
+   Shield does not yet have this.
+
+3. Release-ready product:
+   The accepted configuration can be safely obtained, installed, enrolled,
+   updated, recovered, removed and operated by its intended users. All required
+   release contracts and selected conditional controls pass.
+   Shield does not yet have this.
+
+4. Maintained supported release:
+   Named maintainers own compatibility, vulnerability response, signing,
+   service/API changes, privacy, user support and end-of-support behavior.
+   Releasing a binary alone does not establish this.
+
+The product is complete for a declared version only when milestones 2-4 are
+met for its published support profile and the final checklist in section 17
+is signed off. Future platforms/features remain separate, explicit projects.
+
+
+2. CURRENT BASELINE: PRESERVE WHAT ALREADY WORKS
+==============================================
+
+Repository HEAD when this plan was written:
+  cdf603fb80bda8cf92398acdf84391d8b846affc
+
+At roadmap preparation, the working tree also contained uncommitted
+segmented-audit and capacity-status increments. These labels record validation-
+time status. Later publication does not create hosted or acceptance evidence;
+use actual Git revisions to identify the currently published source.
+
+Latest local software validation:
+  Debug:   157 passing tests, none failed or ignored.
+  Release: 157 passing tests, none failed or ignored.
+  Breakdown per configuration:
+    117 library, 4 parser, 24 synthetic checker, 12 actual CLI/native tests.
+  Formatting and strict all-target/all-feature Clippy passed.
+  Eight hash-bound scoped LPAC observations passed for each current binary.
+
+The published functional QA report describes revision 84ff512, not the later
+working tree. Its 62 independent checks cover offline prototype behavior.
+Keep historical results bound to the code/binaries actually tested.
+
+Implemented and worth preserving:
+  - Restricted LPAC/job worker and fixed typed stdio protocol.
+  - Frozen profiles, task epochs, transactional quotas and operation history.
+  - Broker-held credentials and fixed OpenAI/read-only Graph adapters.
+  - Exact input snapshots and separate one-use publication approvals.
+  - Changed-destination refusal, readback and reviewed local restoration.
+  - Native App Control/WFP lifecycle foundations and optional verifier service.
+  - Pinned Authenticode publisher verification.
+  - Bounded verified audit export, anchored segments and capacity diagnostics.
+  - Explicit refusal/unknown states and bounded process/pipe handling.
+
+Important unfinished or unqualified areas:
+  - No accepted real model/Graph protected workflow.
+  - No qualified App Control/WFP deployment and effect/recovery demonstration.
+  - No independent provider-ceiling/capability-revocation qualification.
+  - No integrated attack-chain, operational or representative-user acceptance.
+  - No product installer, authenticated updater or qualified version floor.
+  - No complete retention/privacy/total-storage lifecycle.
+  - No evidence-backed product readiness lifecycle or support operation.
+
+Never erase the recorded limitations:
+  - Winsock startup failure 10107 is not complete egress-denial evidence.
+  - Publication writes in place and is not crash-atomic.
+  - Local cancellation cannot recall remote effects or disclosed information.
+  - The 64 MiB limit covers main database pages, not all storage or peak WAL.
+  - A local hash chain does not authenticate event truth against administrators.
+  - The current worker is a small brokered-inference client, not Codex CLI.
+
+
+3. DECISIONS THAT MUST BE MADE BEFORE FULL IMPLEMENTATION
+========================================================
+
+Record a named decision owner, rationale, approval date and review trigger for
+each item. UNDECIDED is a blocker, not permission for an implicit default.
+
+D01 Intended users and account type:
+    Consumer, managed enterprise, developer or another explicit group.
+    Verify actual eligibility; a managed Graph tenant is not automatically
+    available to an ordinary consumer. Do not silently change the target user.
+
+D02 Supported Windows profile:
+    Edition, build/update range, x64 architecture, local NTFS file boundary,
+    required Windows components and coexistence with installed protections.
+
+D03 Admission model:
+    Initial trust, unknown/changed software, publisher/version rule breadth,
+    exceptions, policy owner, offline behavior and pre-existing-process limits.
+
+D04 AI client and task:
+    Decide whether version 1 deliberately uses the current custom client.
+    A proposed first task is one local text note plus one approved cloud
+    reference, one bounded inference and separate exact-byte publication.
+    Codex or other real agents require their own interface/containment work.
+
+D05 Provider profile:
+    Exact model/API, Graph account/tenant/resources, identities, permitted
+    operations, credential classes, derived capabilities and overlapping grants.
+
+D06 Trust and operator identities:
+    Daily user, approver, controller owner, setup operator, policy owner,
+    responder, recovery operator, evidence reviewer and signing maintainer.
+    Specify SID/token/ACL/IPC boundaries and compromised-principal exclusions.
+    Per-user private state is not automatically an administrator-protected
+    ceiling against every other process using the same account.
+
+D07 Authority ownership:
+    Task versus shared identities, credentials, filters, native policies,
+    services, keys and budgets; lifetimes, consumers and cleanup/rotation rights.
+
+D08 Numeric budgets:
+    Complete section 5 before feasibility/acceptance trials. Freeze acceptance
+    thresholds before measuring acceptance, not after seeing convenient results.
+
+D09 Disclosure and storage:
+    Which bytes may reach which provider/model, reference versions, privacy,
+    retention, export consent, backups and supported recovery guarantees.
+
+D10 Distribution and update trust:
+    Installer scope, protected paths, package signer, metadata roots, signing
+    roles, time/freshness assumptions and rollback/recovery model.
+
+D11 Optional scope:
+    Protected verifier, signed base policy, sender-constrained tokens and human
+    identity controls are mandatory only when selected/applicable to the claim.
+    Declare unsupported features plainly; never advertise them based on stubs.
+
+D12 Product value and stop decision:
+    What measurable protection or safer operability does Shield add over the
+    actual consumer-native baseline and equivalent native hardening?
+    Lack of viable integration, eligibility or value can stop the product.
+
+Exit artifact:
+  Reviewed R0 scope, authority/resource matrix, budgets, admission/disclosure
+  contract, claim/exclusion register and signed continue/change/stop decision.
+  This plan does not supply that human review.
+
+
+4. PEOPLE, ENVIRONMENTS, ACCOUNTS AND MATERIAL REQUIRED
+=====================================================
+
+Assign actual people to these roles; one person may hold multiple roles only
+where declared trust and independence requirements still hold:
+  - Product/acceptance owner.
+  - Windows enforcement and deployment engineer.
+  - Broker/runtime/provider engineer.
+  - Authorized tenant/resource administrator and separate response operator.
+  - QA/evidence operator and independent effect observer/reviewer.
+  - Release/signing maintainer.
+  - Consented representative users and support/recovery operator.
+
+Provision before native/provider trials:
+  - Disposable Windows VM(s) matching the proposed support profile.
+  - Explicit policy/service/WFP change authorization for those VM(s) only.
+  - Verified snapshot, boot/login recovery and out-of-band recovery access.
+  - Required Windows tooling and genuinely supported native enforcement features.
+  - Controlled sharing/egress and no production data, credentials or accounts.
+  - Owned Graph test resources: at least an allowed reference and forbidden
+    second resource, with precisely assigned roles and no hidden broad grants.
+  - An owned model project/account with finite approved spending limits.
+  - A direct-call test client outside Shield, plus effect observers independent
+    of the subject under test.
+  - A separately protected test-only capability store with expiry/cleanup rules.
+  - Owned inert launch/file/network effects and receiving endpoints.
+  - A release-signing arrangement and separate metadata-signing/recovery roots.
+  - Consent, privacy and safety arrangements for the later user pilot.
+
+Never put credentials, replayable tokens, sessions, preauthenticated URLs or
+signing keys in source, plans, ordinary evidence, logs or chat. Evidence uses
+non-secret lookup identifiers. Rotate/remove owned secrets after trials.
+
+The current shared workstation is not implicitly the disposable deployment lab.
+Previous pushes and a general autopilot request do not provide these resources.
+Standard software CI on a disposable VM is not native/provider authorization
+or an independent acceptance observer.
+
+
+5. MEASUREMENT AND BUDGET REGISTER
+=================================
+
+For each applicable item declare units, finite numeric limit/target, workload,
+trial count, variant coverage, observer, aggregation method and owner. Required
+unfilled values block acceptance. Do not use implementation defaults as an
+unreviewed substitute for product budgets.
+
+Safety and effect:
+  Observed forbidden effects, allowed positive controls, transient effects,
+  false blocks, unresolved decisions and complete observation intervals.
+  A bypass of a required claim blocks that claim; a larger pass total cannot
+  compensate. Zero observed forbidden effects is not universal proof.
+
+Legitimate utility:
+  Clean completion rate; separately measured feasible contaminated-task utility;
+  supported operations, output correctness and abandonment.
+
+Interaction:
+  Prompt count, approval comprehension, setup/recovery effort and manual edits.
+  Preserve the catalog requirement: no extra Shield prompts for unchanged
+  already-approved launches, and no routine manual hash/ACL/policy editing.
+
+Runtime/resources:
+  Worker and broker CPU, memory, processes, startup, deadline, queues/in-flight
+  work, input/output/staging bytes, network flows and token allowances.
+  Specify whether each bound is enforced or only monitored.
+
+Operational timing:
+  Detection/notification, local termination, provider cutoff, recovery,
+  health/evidence freshness and outage tolerance.
+
+Storage/privacy:
+  Main database, peak WAL, retained logs/artifacts/backups, total footprint,
+  export bounds, retention and deletion deadlines.
+
+Performance/value:
+  Baseline and Shield-only overhead; peak RAM, CPU, startup, p95 broker latency;
+  policy deployment/reboot impact; measured native-baseline comparison.
+
+Cost and feasibility:
+  Engineering/operator effort, trial and model spend, cloud/VM costs, required
+  licenses, signing, support and recurring maintenance.
+
+Budget overruns need an owner-reviewed change or stop. Freeze a new plan and
+rerun affected cases; do not retroactively label exploratory results acceptance.
+
+
+6. DEPENDENCY GRAPH AND CONTRACT COVERAGE
+========================================
+
+The existing pilot gate graph is authoritative:
+
+  R0 -> L0
+  L0 -> E0, A0, C0
+  E0 AND A0 AND C0 -> M0
+  M0 -> E1, M1, C1
+  E1 AND M1 AND C1 -> I1 -> O1 -> P0
+  P0 -> formal Release acceptance
+
+Pilot contract counts:
+  R0  4     L0  4     E0  5     A0  2     C0  3     M0 17
+  E1  6     M1 15     C1  6     I1  4     O1 11     P0  5
+  Total: 82 required pilot contracts.
+
+The catalog additionally contains 8 release, 5 conditional and 5 future
+contracts, for 100 named contracts overall. The 24 checker unit tests are
+separate synthetic software tests, not 24 accepted product features.
+
+Installer/updater design and implementation must begin after feasibility is
+viable and be safe enough BEFORE the user pilot. The catalog's formal Release
+tests depend on P0; this must not become an excuse to expose pilot users to an
+unsafe installer, updater or removal path. Rehearse safety in the lab first.
+
+E0/A0/C0 can run in parallel after L0 if their resource/authority ownership is
+separate and declared. E1/M1/C1 can similarly run after M0. Do not build a broad
+service/framework before the three feasibility risks are retired.
+
+
+7. PHASED EXECUTION AND EXIT CRITERIA
+====================================
+
+Phase 0 - Preserve and identify the engineering baseline
+Owner: runtime maintainer and release maintainer.
+  - Review and retain current segmented-export/capacity changes.
+  - Record exact source, dependencies, toolchain, binaries and OS configuration.
+  - Check in/publish reviewed changes only through the normal authorized path.
+  - Keep local software results separate from hosted and acceptance results.
+Exit: reproducible baseline and traceable backlog; no new protection claim.
+
+R0 - Freeze a feasible product profile
+Owner: product owner, Windows/provider owners and acceptance reviewer.
+  - Resolve D01-D12 and section 5.
+  - Map every claimed action to an actual enforcer and independent observer.
+  - Select ordinary workflows, hostile/held-out cases and exclusion boundaries.
+  - Obtain explicit authority and finite feasibility/acceptance budgets.
+Exit: all four R0 contracts accepted; no unexplained mandatory decision.
+
+L0 - Establish the authorized lab
+Owner: lab operator, resource owner and recovery operator.
+  - Provision section 4 and verify legitimate direct access before denial tests.
+  - Demonstrate boot/local restoration and actual remote cleanup.
+  - Establish protected capability custody, independent observers and stop switch.
+  - Reconcile remote state after every local snapshot restore.
+Exit: all four L0 contracts accepted and safe trial/recovery demonstrated.
+
+E0 - Retire endpoint feasibility and value risks
+Owner: Windows engineer and independent native observer.
+  - Verify the selected Windows edition/build and actual UMCI/tool eligibility.
+  - Establish valid ordinary allow/deny inert controls without Shield policy.
+  - Test exact native hash/publisher/version matching and same-signer breadth.
+    Distinguish App Control PE/Authenticode matching from whole-file SHA256
+    release pins; a signature or approval is not a benign-software classifier.
+  - Deploy a minimal reviewed owned policy; verify actual active effects.
+    Check UMCI, audit/enforced modes, script effects, base/supplemental composition
+    and explicit denies without removing or weakening foreign/native policies.
+  - Exercise legitimate installation/update, reboot and owned-policy recovery.
+  - Compare native baseline, equivalent hardening and Shield on identical work.
+    Inventory actual Defender/SmartScreen/Smart App Control behavior where
+    applicable; unavailable or already-blocked controls cannot earn Shield credit.
+Exit: all five E0 contracts accepted, safe recovery and defensible product value.
+Stop: incompatible Windows target, unsafe recovery or no predeclared useful value.
+
+A0 - Retire real-client/model compatibility risk
+Owner: runtime/provider engineer and QA observer.
+  - Complete one real client/model/reference spike through documented interfaces.
+  - Record routing, requested rights, helpers, termination and maintenance cost.
+  - Keep reusable credentials outside the worker; no unprotected fallback.
+Exit: both A0 contracts accepted; required client behavior is actually supportable.
+Stop: necessary interfaces require uncontrolled authority or weakened safeguards.
+
+C0 - Retire provider eligibility/enforcement/response risk
+Owner: provider administrator, response operator and independent client operator.
+  - Verify actual account/tenant eligibility, licensing, consent and setup burden.
+  - Prove exact selected resource/action rights with no broader overlapping grants.
+  - Inventory tokens/sessions/derived URLs and declared alternative endpoints.
+  - Demonstrate separately authorized response and cleanup within its budget.
+Exit: all three C0 contracts accepted and response authority actually usable.
+Stop: no service-enforced ceiling for a required caller/action or wrong target user.
+
+M0 - Harden the selected, feasible implementation
+Owner: runtime, Windows and provider engineers; independent reviewer.
+  - Implement/fix only the selected interfaces and missing work in section 8.
+  - Test actual identities/ACLs, process/IPC/handle access and credential custody.
+  - Verify caller/task/epoch binding and separation from approval/setup authority.
+  - Enforce bounded typed broker operations, atomic reservations and no replay.
+  - Measure/enforce actual worker AND broker resource limits.
+  - Verify installed network/policy state and fail closed on missing/stale/drift.
+  - Test exact shared/task ownership and protected authoritative state.
+Exit: all 17 M0 contracts and selected M0 conditional controls accepted.
+
+E1 - Qualify ordinary endpoint behavior under final policies
+Owner: Windows QA and independent effect observer.
+  - Test standalone and composed configurations, without requiring Shield launch.
+  - Cover alternative launches, interpreters, scripts, policy composition,
+    legitimate application/DLL/update behavior and held-out challenges.
+  - Repeat boot, activation and owned recovery with final helper exceptions.
+Exit: all six E1 contracts accepted; integration has not invalidated E0 claims.
+
+M1 - Qualify real utility and deterministic hostile-worker boundaries
+Owner: runtime/provider QA and independent local/remote observers.
+  - Complete the real approved note/reference/model/review/publication task.
+  - Test contaminated inputs and deterministic hostile workers separately.
+  - Cover file/process/credential/configuration attempts; valid raw and indirect
+    IPv4/IPv6 loopback/LAN/Internet/brokered routes within owned lab scope.
+  - Cover snapshots, redirects/capabilities, read-upload composition, persistence,
+    reimport, passive review, target identity, quiescence and partial effects.
+  - Exercise deadline/cancel/controller loss and reviewed restoration.
+Exit: all 15 M1 contracts accepted; refusing everything is not legitimate utility.
+
+C1 - Qualify the provider's actual independent ceiling
+Owner: direct-client operator, response operator and provider observer.
+  - Use valid credentials outside Shield to retrieve the approved reference.
+  - Test forbidden resources/actions and alternate routes for each claimed identity.
+  - Retain owned issued tokens/sessions/download capabilities in protected custody.
+  - Measure their actual survival/cutoff before and after the declared response.
+  - Use live unrevoked controls; distinguish denial, expiry, outage, throttle,
+    cached data and invalid probes. Report uncertainty rather than success.
+Exit: all six C1 contracts and selected C1 conditional controls accepted.
+
+I1 - Qualify the composition, not just individual mechanisms
+Owner: integrated QA and independent observer/reviewer.
+  - Execute the real legitimate workflow with exact final binaries and policy.
+  - Exercise connected inert attack chains across launch, AI/reference,
+    credentials, persistence, network and direct provider access.
+  - Begin some cases at assumed later compromise stages; early blocking must
+    not hide absent downstream protection.
+  - Invalidate affected results when OS/helpers/model/provider/policy drift.
+Exit: all four I1 contracts accepted under one compatible frozen profile.
+
+O1 - Qualify response, remaining authority and recovery
+Owner: incident/recovery operator with local and provider observers.
+  - Detect named inert incidents and issue trusted, timely notifications.
+  - Exercise evidence loss, clock/freshness issues and partial activation.
+  - Authenticate narrow responses; preserve foreign/shared resources.
+  - Verify local closure, remaining broker authority and actual remote cutoff.
+  - Rehearse shared-key/identity exposure, false alarms, outages, interrupted
+    install/remove/cleanup, poisoned recovery and re-enrollment.
+  - Withdraw trust after root compromise; cleanup is not proof of cleanliness.
+Exit: all 11 O1 contracts accepted with measured times and explicit unknowns.
+
+P0 - Qualify intended users, usability and cost
+Owner: product owner, consented users and usability/QA reviewer.
+  - First complete lab installer/update/removal safety rehearsals.
+  - Run representative benign ordinary and integrated tasks; attacks stay in lab.
+  - Measure completion, false blocks, prompts, comprehension and abandonment.
+  - Use separately consented benign misleading-approval simulations.
+  - Exercise real intended-operator recovery and removal.
+  - Measure performance and complete deployment/operator/licensing/support costs.
+Exit: all five P0 contracts accepted; actual intended users can operate the product.
+
+Release - Qualify the actual distributable
+Owner: release/signing maintainer, QA and acceptance owner.
+  - Run the eight release contracts against the real signed downloadable package.
+  - Verify bootstrap, update freshness/version floors, signing separation,
+    rotation/outage, interrupted deployment, privacy and maintenance readiness.
+  - Confirm the package does not introduce policy exceptions or runtime changes
+    that invalidate pilot evidence. Rerun affected prerequisite cases if it does.
+Exit: release checklist in section 17 accepted for the exact shipped version.
+
+
+8. REMAINING ENGINEERING WORK PACKAGES
+======================================
+
+WP1 - Authorized execution and independent evidence collection
+  Extend the existing baseline/canary tools into bounded lab orchestration:
+  exact workload manifests, paired controls, independent local/provider effects,
+  time/order/coverage, original artifacts, cancellation and verified cleanup.
+  Validate producer provenance and reviewer custody; the current checker checks
+  declared schemas/math/hashes, not whether raw claims happened.
+  Observers must remain outside the declared hostile subject's trust domain.
+  Define observation gaps and evidence loss as unknown/failed qualification.
+  Existing files: src\baseline.rs, src\selftest.rs, tests\acceptance\*.
+
+WP2 - Supported native enrollment and lifecycle
+  Finish/revise actual deployment for the selected Windows profile, including
+  narrow elevation, exact ownership, active/reboot/pending states, coexistence,
+  partial transitions and reviewed cleanup. Qualification may reveal code gaps.
+  Select the protected verifier only if required; do not elevate the broker.
+  Never replace foreign policy or grant a generic privileged command interface.
+  Existing files: src\endpoint.rs, src\network.rs, src\verifier*, src\platform\*.
+
+WP3 - Provider enrollment, ceilings and response
+  Supply the supported provisioning/consent process and resource-assignment
+  checks, identity inventory, overlapping-grant checks and independent probes.
+  Implement the selected narrow response integration, or a supported verified
+  owner-operated procedure with measured availability and latency.
+  Separate read-only runtime credentials from management/revocation authority.
+  Keep derived URLs private and test already-issued capabilities, not only
+  future token acquisition. Do not call inference brokering account protection.
+  Existing files: src\providers.rs, src\profile.rs and new selected lab tooling.
+
+WP4 - The selected actual AI workflow
+  Prove the current custom client useful before generalizing it. If another
+  client is selected, implement its documented hooks and full rights/termination
+  contract explicitly. No generic shell/HTTP/signing tool broker by convenience.
+  Complete trusted disclosure/review flow and enforce exact source/destination
+  binding under races, restarts and hostile inputs. Qualify output quiescence.
+  Existing files: src\runtime.rs, src\worker.rs, src\protocol.rs, src\state.rs.
+
+WP5 - Durable publication and operational recovery
+  Decide and publish the supported crash guarantee. Current locked in-place
+  writes retain identity but are not crash-atomic; do not use a naive rename
+  that drops the identity/race protection.
+  If crash-atomic replacement is required, design and qualify metadata/content
+  durability, locking, identity continuity and recovery before changing writes.
+  In either case test power/interruption boundaries, partial data, original
+  snapshot availability, conflicting edits, disk full and post-write uncertainty.
+  Preserve old unknown operations and consumed authority after restoration.
+  Existing files: src\files.rs, src\state.rs, src\runtime.rs.
+
+WP6 - Signed installation, update and migration
+  This is missing product code, not just missing tests.
+  Design a small installer/updater consistent with the chosen privilege model.
+  Use maintained authenticated-update verification rather than invented crypto.
+  Specify root bootstrap, signed/versioned metadata, expiry/freshness, trusted
+  time assumptions, offline/stale behavior, delegated roles and key rotation.
+  Protect the version floor against the declared attacker and keep it through
+  recovery. Fail unknown trust/revocation conditions according to the profile.
+  Keep package publisher, App Control policy signer and metadata-root trust
+  separate; one signature does not authorize all three.
+  Coordinate new executable hashes, worker image, policy admission, profiles,
+  database schema and credentials without widening authority.
+  Revoke/drain old tasks; migration/rollback must not restore old approvals,
+  forgotten expenditure, stale epochs or uncertain-effect replay.
+  Reconcile interrupted install/update/remove/reboot without disabling unrelated
+  protection. Test updates and recovery of signing/policy components themselves.
+  Existing src\release.rs verifies an artifact; it does not implement this.
+
+WP7 - Storage, audit, privacy and retention lifecycle
+  Segmented export and capacity sampling are implemented; they do not finish
+  long-running operation. Select and enforce/measure task-artifact, log, backup,
+  main-database, peak-WAL and total-storage policies.
+  Define export consent, sensitive-content lifetime and support-bundle redaction.
+  Design authenticated archival/continuity checkpoints if records are retired.
+  Preserve consumed grants, monotonic expenditure, unknown operations and
+  replay-prevention state; never clear the journal to obtain fresh authority.
+  Test disk exhaustion, interrupted archival/deletion, unavailable storage and
+  recovery without silent truncation, invalid continuation or quota refund.
+  Verify diagnostics/source-chain/log paths do not disclose secrets or URLs.
+  Existing files: src\state.rs, src\util.rs, src\error.rs, src\main.rs.
+
+WP8 - Evidence-backed health and trusted operator experience
+  Replace hardcoded unverified/readiness placeholders only after a trustworthy
+  configuration-bound evidence and freshness lifecycle exists.
+  Report endpoint, worker/broker and provider planes separately: supported,
+  unknown, pending, degraded, stale, unqualified and verified where justified.
+  Authenticate evidence/approval issuers and prevent stale/replayed/foreign
+  results from creating readiness. A manifest hash alone does not prove truth.
+  Withdraw affected claims on drift/evidence loss and stop affected new work.
+  Provide understandable enrollment, exception, approval, denial, response and
+  recovery flows; select CLI/GUI packaging based on intended-user testing.
+  No new resident service or GUI framework is mandatory just for appearance.
+  Existing files: src\main.rs, src\profile.rs and acceptance/evidence consumers.
+
+WP9 - Maintainability, packaging and support
+  Lock/review dependencies and toolchain; inventory native/API compatibility.
+  Add release provenance, dependency/license inventory, build/signing custody,
+  privacy/support documentation and independently reviewed threat boundaries.
+  Define vulnerability reporting, triage, patch expectations, signing recovery,
+  supported versions and safe end-of-support behavior.
+  Budget ongoing Windows/model/Graph changes and regression environments.
+  Do not advertise broad malware classification, certification or compliance
+  that has not been specifically implemented and independently established.
+
+
+9. EVIDENCE AND TEST-DRIVEN DEVELOPMENT RULES
+===========================================
+
+For each missing behavior:
+  1. Name the requirement, exact measurable outcome and actual owner/enforcer.
+  2. Add the smallest test exercising the real boundary.
+  3. Observe RED for the missing behavior; compilation/policy refusal is not an
+     observed security assertion failure. Record blocked execution honestly.
+  4. Implement the root behavior without broadening permissions or weakening tests.
+  5. Observe GREEN and verify legitimate behavior, negative/fault cases, limits
+     and unchanged authority. Rerun directly affected surfaces/configurations.
+  6. Record exact source/binary/profile/workload/observer bindings and update docs.
+
+Layers must remain distinct:
+  - Unit/property tests: arithmetic, schema, policy logic, state machines.
+  - Real local integration: SQLite, NTFS identities, IPC, owned processes,
+    actual CLI bytes/exits, timeout/cancel and fault reporting.
+  - Native deployment tests: installed state plus actual independent effects.
+  - Live provider tests: real responses/state and valid direct callers.
+  - Composed acceptance: legitimate utility plus hostile/partial-failure variants.
+  - Signed-package/user/operations tests: actual distribution and intended users.
+
+Use paired positive and negative controls. A process, socket or credential
+that cannot function before the restriction is not a valid forbidden-effect
+control. Missing final markers cannot exclude earlier transient effects.
+Model refusal does not establish deterministic hostile-worker containment.
+No all-refusal workload may be counted as successful legitimate functionality.
+
+Freeze variants, trial counts and min/max metrics before acceptance. Use
+held-out challenges and repeated cold-start/reboot/recovery runs as declared.
+Do not pool incompatible configurations or substitute broad permissions when
+a scoped call fails. Preserve blocked/failed results and causal uncertainty.
+
+Existing bundle structure:
+  <absolute-local-NTFS-root>\
+      plan.json
+      runs\<case-id>.json
+      artifacts\<canonical-sha256>.blob
+
+Current bounds: plan <=1 MiB, case record <=4 MiB, artifact <=2 MiB.
+Design bounded captures to fit the schema. If larger evidence is required,
+review/version the schema and checker before collection; do not truncate
+observations after a failed budget to manufacture a valid record.
+
+Bind exact code/specification/paper/harness/profile/OS/policy/model/provider
+versions. Real evidence needs reviewed authenticity/custody and semantic
+inspection beyond the current hash/shape checker. Do not store live capabilities
+in the bundle. Clock/time/order uncertainty must be visible.
+
+Software commands:
+  cargo test --locked --all-targets
+  cargo test --release --locked --all-targets
+  cargo fmt --all -- --check
+  cargo clippy --locked --all-targets --all-features -- -D warnings
+
+Checker/listing commands:
+  cargo test --locked --test acceptance
+  cargo test --locked --features acceptance --test acceptance -- --list
+
+Only with a real, operator-reviewed bundle in an authorized environment:
+  $env:SHIELD_ACCEPTANCE_BUNDLE = 'C:\ShieldLab\Evidence\reviewed-bundle'
+  cargo test --locked --features acceptance --test acceptance pilot_
+  cargo test --locked --features acceptance --test acceptance release_
+
+Run selected conditional contracts explicitly after their prerequisites.
+Do not expect a blanket all-features test run to certify disabled future
+features. Disabled extensions have no support claim; record scope dispositions
+explicitly and never skip a mandatory selected contract to obtain green.
+
+
+10. RELEASE ACCEPTANCE CHECKLIST
+================================
+
+Track all eight named release contracts; do not replace them with a generic
+"signature verified" checkbox:
+  - release_first_download_native_compatibility
+  - release_signing_trust_separation
+  - release_exact_pinned_publisher
+  - release_metadata_and_version_floor
+  - release_key_rotation_and_outage
+  - release_interrupted_owned_deployment
+  - release_evidence_privacy_and_retention
+  - release_maintenance_and_support
+
+Use the real download origin/metadata and newly signed package versions.
+Keep native protections intact. Copying an unsigned development binary to a
+friendlier path or bypassing execution policy is not distribution acceptance.
+Test a valid correctly signed artifact as well as wrong/unsigned/stale/revoked
+cases; negative-only verifier tests cannot qualify release success.
+
+Provide installation, enrollment, ordinary use, updates, exceptions, support,
+export/privacy, incident response, recovery, removal and limitations documents.
+The advertised support matrix and threat/identity exclusions must match the
+exact configurations actually accepted.
+
+
+11. CONDITIONAL AND FUTURE WORK: DO NOT HIDE SCOPE GROWTH
+=======================================================
+
+Conditional contracts:
+  - protected verifier and reviewed cleanup;
+  - signed base-policy recovery;
+  - sender-constrained tokens;
+  - human authentication/session controls.
+
+Selection makes the relevant contracts mandatory. For a signed base policy,
+rehearse required signed replacement/version/reboot/removal with owned keys.
+For token binding, prove actual provider enforcement and key custody; it does
+not prove benign intent for every request. Human MFA claims apply only to
+eligible human identities, not application client credentials.
+
+Future contracts:
+  - local-only information-flow guarantees;
+  - optional local-AI value;
+  - optional local-AI classification quality;
+  - additional AI clients;
+  - additional operating systems.
+
+These are not mandatory for the declared initial version unless scope is
+explicitly expanded. Each expansion needs its own resources, budgets, enforcers,
+compatibility, recovery and measured value. Windows/custom-worker results cannot
+confer another platform/client's support. Do not let "finish everything" turn
+into an unlimited feature backlog with no releasable support boundary.
+
+
+12. STOP, REVISE AND INVALIDATE RULES
+====================================
+
+Stop or withdraw the affected claim when:
+  - No applicable authorization/resources or finite approved budget exists.
+  - A required positive control is invalid or observer coverage is incomplete.
+  - A required effect bypass occurs or a ceiling can be widened.
+  - The selected user/Windows/provider is ineligible or cannot recover safely.
+  - A necessary agent route cannot be mediated without wider authority.
+  - Native/provider behavior cannot distinguish denial from failed testing.
+  - Revocation remains partial/unknown beyond the approved claim's deadline.
+  - Legitimate utility, false-block, cost or recovery budgets fail.
+  - Evidence is stale, corrupt, replayed, missing or configuration-incompatible.
+  - A signing/trust/identity compromise invalidates the assumed root of trust.
+
+Record continue/change/stop decisions. A stop may mean select another candidate
+and repeat affected prerequisites, narrow an honestly supported claim, or end
+the product proposal. It never means remove a protection just to keep moving.
+
+
+13. PARALLEL WORK AND THE NEXT EXECUTABLE MILESTONE
+=================================================
+
+Immediately:
+  - Preserve/review the current software increments and this roadmap.
+  - Have the product/operator owners complete R0 decisions and numeric budgets.
+  - Provision authorized L0 resources and independently verify recovery.
+
+Next:
+  - Run bounded E0/A0/C0 spikes with the least implementation needed.
+  - Make an explicit feasibility/value decision before expanding architecture.
+  - Once viable, finish M0 and begin only the selected deployment/update/storage
+    work needed for a safe supported pilot.
+
+Next externally meaningful milestone:
+  One real approved note/reference/model task under the required native and
+  provider gates, with exact reviewed publication, paired forbidden-effect
+  controls, independent evidence and verified cleanup.
+
+This is not achieved by another offline fixture, JSON bundle, documentation
+revision or software-only passing test count.
+
+
+14. ESTIMATION AND FUNDING
+=========================
+
+A defensible completion date or percentage is not available before R0/L0 and
+the E0/A0/C0 decisions. Provider eligibility or Windows incompatibility can
+change the architecture or stop the product entirely.
+
+After feasibility:
+  - Break each remaining work package into bounded tasks, owner and dependency.
+  - Estimate engineering, review, lab, signing and user-study effort separately.
+  - Include access/provisioning/certificate/licensing lead times and rework.
+  - Fund ongoing signing, CI/lab capacity, provider tests and user support.
+  - Schedule release-candidate stabilization and independent review, not only code.
+  - Re-estimate when selected interfaces or requirements change.
+
+Do not promise a shipping date based solely on the number of unimplemented
+contracts. One contract may require a real service integration or recovery
+rehearsal; 100 checker invocations do not represent 100 equal units of work.
+
+
+15. REQUIRED DELIVERABLE INVENTORY
+=================================
+
+Keep a traceable acceptance index with requirement, owner, code/configuration,
+test/variant, authentic evidence, exact version, review and unresolved risk.
+
+Required outputs:
+  - Approved product/support profile, threat exclusions and authority matrix.
+  - Numeric budget/stop register and feasible Windows/client/provider decisions.
+  - Authorized lab, recovery records, secret-custody and cleanup procedures.
+  - Supported native enrollment/configuration and provider setup/response paths.
+  - Actual useful AI workflow with trusted disclosure/review/publication.
+  - Independent collectors, replay checker and reviewed evidence bundles.
+  - Qualified response, remaining-authority and recovery procedures.
+  - Storage/privacy/retention/export and support-bundle lifecycle.
+  - Signed installer/packages, authenticated updater, migration and version floor.
+  - Key bootstrap/rotation/compromise/recovery procedures.
+  - Product health/status, operator UX, onboarding and ordinary-user documentation.
+  - Regression CI, compatibility matrix, release provenance and dependency inventory.
+  - Consented usability/performance/cost pilot and accepted final release records.
+  - Named maintenance/support/vulnerability-response owners and end-of-support plan.
+
+Evidence reports must disclose limits, failures, exclusions and who accepted
+residual risk. No broad "protected" badge or percentage replaces that index.
+
+
+16. WHAT CAN AND CANNOT BE DONE AUTONOMOUSLY
+==========================================
+
+Repository-only implementation can proceed where behavior, scope and trust
+boundaries are already approved: focused TDD, bounded helpers, negative/fault
+tests, documentation, static checks and owned local fixture validation.
+
+Autonomy does not create:
+  - reviewed human/operator decisions;
+  - disposable VM access, provider ownership, licenses or spending authority;
+  - signing identities/keys or production trust enrollment;
+  - real independent observations, consented users or authentic acceptance.
+
+When these are missing, record the concrete blocker and continue only genuinely
+independent, in-scope work. Do not create endless incidental hardening to imply
+progress on a blocked central gate, fabricate results or mark the product done.
+
+
+17. FINAL DEFINITION-OF-DONE CHECKLIST
+=====================================
+
+[ ] Exact supported Windows/client/provider/user/identity profile is approved.
+[ ] Threat claims, exclusions, operators, budgets and recovery authority are fixed.
+[ ] All 82 pilot contracts pass with authentic reviewed evidence and valid controls.
+[ ] All 8 release contracts pass for the actual downloadable signed release.
+[ ] Every selected conditional contract passes; unsupported/future scope is explicit.
+[ ] Real legitimate tasks and representative ordinary workflows meet their budgets.
+[ ] Native launch/effect, worker/broker and direct provider ceilings are independently
+    established; no unqualified network/credential/account-wide claim is advertised.
+[ ] Remaining authority, revocation limits and irreversible effects are reported honestly.
+[ ] Install/enroll/update/migrate/reboot/recover/remove work without stranding users,
+    resetting authority/version floors or disabling unrelated native protection.
+[ ] Storage, privacy, retention and export behavior remain usable under long-running,
+    full-disk, interrupted and adversarial conditions.
+[ ] Approval/status/enrollment/recovery interfaces are understood by intended users.
+[ ] Final package/configuration matches accepted evidence; material drift is requalified.
+[ ] Required regression, compatibility, independent review and signed-release checks pass.
+[ ] Maintainers, signing recovery, vulnerability response, support funding and
+    end-of-support behavior are operational.
+[ ] Product owner and required independent reviewers accept documented residual risks.
+
+Only then mark the declared product version complete. Continue maintenance
+after release; never extend that sign-off to untested identities, agents,
+providers, platforms or future features.
