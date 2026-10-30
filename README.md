@@ -64,21 +64,23 @@ strict Clippy, debug/release builds, and native regression checks. Native tests
 run under a fresh standard-user identity on a disposable GitHub-hosted VM,
 with an independent elevation check.
 
-Published software baseline `b8b41d0` has a
-[passing hosted run](https://github.com/k0jir0/Shield/actions/runs/40952767924):
-**133 tests passed in each debug/release configuration**, plus eight scoped
-LPAC observations per binary. Formatting, strict all-feature Clippy and builds
-passed. This includes the fix for Windows critical-error dialogs blocking
-malformed-executable launch checks; native errors remain explicit.
+Published software baseline `84ff512` has a
+[passing hosted run](https://github.com/k0jir0/Shield/actions/runs/40979275471):
+**148 tests passed in each debug/release configuration**, with no failures or
+ignored tests, plus eight scoped LPAC observations per binary. Formatting,
+strict all-feature Clippy and builds passed.
 
-Subsequent local audit, diagnostic and publication-recovery hardening adds
-**15 regressions**. The latest complete all-target runs passed **148 tests in
-debug and 148 in release**, with no failures or ignored tests. Strict
-all-feature Clippy and formatting pass. These are local results; fresh hosted
-confirmation for this revision remains pending. Earlier Application Control-blocked
-attempts remain in the [technical paper](paper.txt); later passes do not erase
-them. Software checks do not certify deployment or protection. Do not weaken
-security or execution policy to make a check pass.
+The [2026-10-30 functional QA report](reports/functional-qa-2026-10-30.txt)
+records fresh local runs of all 148 tests per configuration, plus **62 independent
+black-box checks across 66 actual CLI invocations**. The pass covers exercised
+offline prototype functionality, not full-product protection or release
+acceptance. Raw machine-local evidence remains local; the published report
+includes the case matrix, executable hashes and explicit coverage gaps.
+
+Earlier Application Control-blocked attempts remain in the
+[technical paper](paper.txt); later passes do not erase them. Software checks
+do not certify deployment or protection. Do not weaken security or execution
+policy to make a check pass.
 
 ## Current limits
 

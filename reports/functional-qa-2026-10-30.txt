@@ -1,0 +1,203 @@
+SHIELD FUNCTIONAL QUALITY ASSURANCE
+===================================
+
+Executed: 2026-10-30 UTC
+Revision: 84ff5122c42f1f2f213cbc2ca787c30eb9ae3390
+Repository: k0jir0/Shield
+Environment: Windows x86_64, build 26300.9711, non-elevated controller.
+
+VERDICT
+-------
+PASS for the exercised offline prototype functionality in BOTH debug and release.
+Full Shield functional acceptance and release readiness are NOT ESTABLISHED.
+
+No product defects were observed in the exercised scenarios. No source changes,
+security-policy changes, service installations, live provider calls, provider
+spending, or production credential operations were required.
+
+This was not just a unit-test run: a separate black-box harness launched the
+actual executables, closed stdin to avoid interactive consent, imposed a
+90-second process deadline, collected exit status/stdout/stderr, and independently
+checked destination files, protected original snapshots, exported records, and
+SHA256 audit chains. Each command was a new process, exercising persisted state
+and approvals across controller restarts.
+
+MEASURED RESULTS
+----------------
+                                      Debug        Release
+Library regression tests              110 PASS     110 PASS
+CLI parser tests                        4 PASS       4 PASS
+Synthetic acceptance-checker tests     24 PASS      24 PASS
+Actual CLI/native integration tests    10 PASS      10 PASS
+All-target regression total           148 PASS     148 PASS
+Independent black-box assertions       31 PASS      31 PASS
+Actual black-box CLI invocations       33           33
+Expected nonzero exits checked         17           17
+Hash-bound scoped native observations   8 PASS       8 PASS
+
+All regression targets completed with zero failed or ignored tests.
+There were no blocked executions in this run.
+The eight native observations are included in the black-box native-report
+assertion; they are not eight additional independent end-to-end workflows.
+The 24 synthetic checker tests are not authentic protection acceptance evidence.
+
+CANDIDATE BINDING
+-----------------
+Debug shield.exe SHA256:
+026d0c57f2faeb6261f06b1eb2e0aba8cbde2fca07a4d7f527fde1f9744d8582
+
+Release shield.exe SHA256:
+d6d72684a3e8ac1851230801ba603be83198cc779fa7c1ecc9256ec1ff545503
+
+Both hashes matched before/after independent testing and their corresponding
+native reports. Frozen profile hashes also remained unchanged. The source
+worktree was clean and HEAD was unchanged after execution.
+These results describe the revision above, not subsequent documentation commits.
+
+BLACK-BOX CASE MATRIX
+--------------------
+Every row below passed in BOTH configurations.
+
+ #  Scenario                     Expected and observed result
+--  ---------------------------  ---------------------------------------------
+ 1  CLI help                     Help succeeded without creating state.
+ 2  Invalid command              Exit 2, explicit argument error, no state.
+ 3  Standard-user environment    Inventory confirmed non-elevated controller.
+ 4  Enrollment template          New template created without opening state.
+ 5  Template overwrite           Explicit refusal; original template unchanged.
+ 6  Initialize private state     State created; ready=false.
+ 7  Duplicate initialization     Explicit refusal; frozen profile unchanged.
+ 8  Readiness gate               Nonzero exit; integrated_pilot_ready=false;
+                                 all twelve formal gates remained unverified.
+ 9  Missing endpoint policy      Explicit refusal, no policy deployment.
+10  Capture manual task          manual_lab task; destination unchanged.
+11  Passive exact disclosure     Decoded reference exactly retained; raw ESC
+                                 and bidirectional controls absent from output.
+12  Unauthorized live run        Refused for missing lab authorization before
+                                 provider execution or destination changes.
+13  Premature review             No approval before successful task closure.
+14  Stage human proposal         No destination write; output explicitly said
+                                 this was not model/provider/isolation evidence.
+15  Wrong proposal digest        Approval refused for mismatched exact digest.
+16  Unknown approval             Random approval refused; destination unchanged.
+17  Exact publication approval   Correct digest, unused approval, 300s lifetime.
+18  Publication                  Exact shorter UTF-8 bytes written and read
+                                 back, without residual old bytes; original
+                                 snapshot retained; crash_atomic=false.
+19  Approval replay              Repeated publication refused; bytes unchanged.
+20  Unnecessary restoration      Successfully published bytes not reverted as
+                                 though an uncertain publication had occurred.
+21  Unnecessary recovery         No fictitious interrupted operation or replay.
+22  Concurrent destination edit  Publication refused; human-edited bytes kept.
+23  Cancellation                 Epoch revoked; prior approval unusable; human
+                                 edit kept; no claim of remote effect recall.
+24  Review after cancellation    Fresh publication authority refused.
+25  Audit export                 Metadata-only records; fixture instruction and
+                                 reference absent; integrated_gate_pass=false.
+26  Independent audit integrity  Every sequence and event SHA256 recomputed with
+                                 separate .NET crypto and canonical encoding.
+27  Audit overwrite              Refused; previous export byte-for-byte intact.
+28  Console/file audit parity    Both exposed the same verified event snapshot.
+29  Alternate-stream export      Explicit refusal; no ADS or base-file change.
+30  Scoped native selftest       Eight passing observations bound to the exact
+                                 executable; no stderr/cleanup diagnostic.
+31  Candidate/profile stability  Executable and frozen profile hashes unchanged.
+
+All 34 expected nonzero command results were additionally checked against their
+intended diagnostic, not merely accepted because a command failed. Expected
+refusals are passes only for their declared negative cases.
+
+ADDITIONAL REGRESSION FUNCTIONAL COVERAGE
+---------------------------------------
+The ten actual CLI/native integration tests exercised:
+- Journal/profile diagnostic refusal without disclosing fake capability values.
+- Audit output shape, create-new behavior, bounds, and no partial output.
+- Deadline termination/reaping of the exact owned suspended process.
+- Ordinary-launch allow/deny controls and retained prerequisite baseline.
+- Successful wrong-control rejection and retained failure.
+- Malformed-image native launch failure without calling it a policy denial.
+- Unsigned publisher-verification refusal and pinned-template refusal.
+- Frozen protected-verifier opt-in and refusal of direct service-mode launch.
+- A real LPAC worker's offline stdio inference request/result exchange.
+- Manual prepare/inspect/stage/review/publish/conflict/cancel/audit workflow.
+
+The full library suite also passed real owned-file/SQLite fault-injection tests
+for dispatch-journal failures, post-write finalization uncertainty, explicit
+reconciliation/restoration, and cancellation despite journal failure. These
+are local fault tests, not actual power-loss or deployed recovery qualification.
+Exact audit bounds and bounded/redacted diagnostic regressions also passed.
+
+SCOPED NATIVE OBSERVATIONS
+-------------------------
+Both configurations observed:
+1. Worker exited normally.
+2. Owned host-file read did not succeed.
+3. Controller memory access did not succeed.
+4. Owned host credential read did not succeed.
+5. No loopback connection was observed.
+6. Child process was not created.
+7. Owned test credential removal completed.
+8. Owned test workspace removal completed.
+
+IMPORTANT: the network observation was Winsock STARTUP failure 10107, with no
+listener connection. It is not proof of firewall egress enforcement or complete
+network containment. These probes are not integrated application-control,
+provider, model, attack-chain, or production-environment qualification.
+
+UNTESTED / BLOCKED PRODUCT ACCEPTANCE
+------------------------------------
+Surface                         Status and missing prerequisite
+------------------------------  -----------------------------------------------
+Deployed App Control/WFP        NOT TESTED: requires authorized disposable policy
+and protected verifier          deployment/recovery environment and reviewed scope.
+Live model and Graph workflow   NOT TESTED: no authorized owned live resources,
+                                credentials, budgets, or independent observers.
+Provider ceilings/revocation    NOT TESTED: local accounting/refusal tests cannot
+                                substitute for independent provider measurement.
+Integrated adversarial pilot   NOT TESTED: reviewed R0/L0 prerequisites and real
+                                execution/effect/recovery measurements absent.
+Signed release happy path       NOT TESTED: no qualified signed publisher artifact
+                                supplied; unsigned refusal was tested.
+Installer/updater/version floor NOT QUALIFIED: not supplied by release verify.
+Power-loss/reboot recovery      NOT TESTED: SQLite fault injection is not a real
+and representative operators    power cut, reboot/restore trial, or user study.
+
+No formal acceptance milestone was promoted by this pass. A successful manual
+workflow is not an AI/provider execution, ordinary-launch controls are not
+deployed native admission enforcement, and a valid local audit hash chain is
+not independent/admin-proof evidence or proof that recorded claims are true.
+
+PUBLICATION AND LOCAL EVIDENCE
+------------------------------
+This repository copy publishes the QA findings, case matrix and candidate hashes.
+Raw evidence remains with the original local QA report, not in this repository:
+command output and native reports contain machine-local paths and identifiers.
+The following names identify retained local evidence, not repository files:
+- summary.json: measured totals and scope-limited verdict.
+- regressions.json: commands, exit codes, and full regression log paths.
+- debug-tests.log and release-tests.log: complete Cargo test output.
+- blackbox-cases.json: all 62 individual assertion results.
+- blackbox-commands.json: all 66 command arguments, exits, stdout/stderr, timings.
+- refusal-diagnostics.json: all 34 expected-negative diagnostic checks.
+- binary-bindings.json: initial/final executable paths and SHA256 hashes.
+- debug-blackbox/audit-export.json: actual verified metadata export.
+- release-blackbox/audit-export.json: actual verified metadata export.
+- debug-blackbox/scoped-native-report.json: eight observations and binary binding.
+- release-blackbox/scoped-native-report.json: eight observations and binary binding.
+- evidence-manifest.json: SHA256/size inventory of the original report/evidence.
+
+Regression reproduction commands, from the Shield repository:
+  cargo test --locked --all-targets
+  cargo test --locked --all-targets --release
+
+Raw command records retain black-box invocation arguments and exact output.
+Only explicitly owned fixture state/files were used; disposable state and input
+fixtures were removed after verification. Retained exports/reports/logs contain
+test metadata, not production credentials or live provider content.
+
+CONCLUSION
+----------
+Shield's exercised offline controller, authority, publication/refusal, audit,
+and scoped worker paths functioned correctly on this host in debug and release.
+The evidence supports that bounded conclusion, not completion of Shield or a
+full-product functional QA/release sign-off.
